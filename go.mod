@@ -1,8 +1,8 @@
 module github.com/daicang/mk
 
-go 1.13
+go 1.15
 
 require (
-	github.com/boltdb/bolt v1.3.1 // indirect
-	github.com/heketi/heketi v9.0.0+incompatible
+	github.com/go-logr/logr v0.2.1
+	github.com/google/gofuzz v1.2.0
 )
