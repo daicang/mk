@@ -1,85 +1,103 @@
 package mk
 
 import (
+	"os"
 	"unsafe"
-
-	"github.com/heketi/heketi/pkg/db"
 )
 
 const (
-	// InternalFlag marks page as internal node
-	InternalFlag = 0x01
+	metaFlag     = 0x01
+	internalFlag = 0x02
+	leafFlag     = 0x04
 
-	// LeafFlag marks page as leaf
-	LeafFlag = 0x02
+	MetaPage     = "MetaPage"
+	InternalPage = "InternalPage"
+	LeafPage     = "LeafPage"
+	UnknownPage  = "UnknownPage"
 
-	MaxAllocSize = 0xFFFFFFF
-	maxPageIndex = 0x7FFFFFF
-	KVMetaSize   = int(unsafe.Sizeof(KVMeta{}))
+	// maxArraySize is uint64 max, must be constant
+	maxArraySize = 0xFFFFFFFF
+
+	// maxPageIndex should be at least maxAllocSize / pageSize
+	// must be constant
+	maxPageIndex = 0xFFFFFFF
+
+	metaSize = int(unsafe.Sizeof(meta{}))
 )
 
-// Pgid is page id
-type pgid uint64
+var (
+	// Linux page size by default is 4kB, 2^12 Bytes
+	pageSize = os.Getpagesize()
+)
 
-// Page represents one mmap page
-// layout:
-// page struct | child pgid | child pgid | .. | (p.Data)meta | meta | .. | key | value | key | value | ..
+type pgid uint32
+
+// page is the basic mmap storage block
+// page layout:
+// page struct | (metaAddr)meta structs | (dataAddr) keys or kvs
 type page struct {
 	// Each page has its index
 	ID pgid
-	// Flag tell the page is leaf or not
-	Flags uint16
-	// Count is inode count
-	Count uint16
-	// ChildPtr points to starting address of children pgid array
-	// Empty when page is leaf
-	ChildPtr uintptr
-	// Meta points to starting address of KV metadata
-	MetaPtr uintptr
+
+	// lag marks page type
+	flags uint16
+
+	// overflow is 0 for single page
+	overflow int
+
+	// numKeys is key count
+	numKeys int
+
+	// metaAddr marks the starting address of metadata
+	metaAddr uintptr
 }
 
-// KVMeta stores offset and size of one KV pair
-type KVMeta struct {
-	// Offset represents offset between KV content and this Meta struct
-	// in bytes
-	Offset uint32
+// meta stores metadata for one KV pair or one index
+type meta struct {
+	// offset is the shift from dataAddr
+	offset int
+
 	// Keysz is the length of the key
-	Keysz uint32
-	// Valuesz is the length of the value
-	Valuesz uint32
+	keySize int
+
+	// Valuesz is the length of the value (for leaf node)
+	valueSize int
+
+	// childID is the child pgid (for internal node)
+	childID pgid
 }
 
-// GetChildPgid returns child pgid for given index
-func (p *Page) GetChildPgid(index uint16) Pgid {
-	return (*[maxPageIndex]Pgid)(unsafe.Pointer(&p.ChildPtr))[index]
-}
-
-// GetKVMeta returns KVMeta for given index
-func (p *Page) GetKVMeta(index uint16) *KVMeta {
-	return &((*[maxPageIndex]KVMeta)(unsafe.Pointer(&p.MetaPtr)))[index]
-}
-
-// Key returns the content of the key
-func (m *KVMeta) Key() []byte {
-	buf := (*[MaxAllocSize]byte)(unsafe.Pointer(&m))
-	return buf[m.Offset : m.Offset+m.Keysz]
-}
-
-// Value returns the content of the value
-func (m *KVMeta) Value() []byte {
-	buf := (*[MaxAllocSize]byte)(unsafe.Pointer(&m))
-	begin := m.Offset + m.Keysz
-	return buf[begin : begin+m.Valuesz]
-}
-
-type Pager struct {
-	db    *db.DB
-	pager map[Pgid]*Page
-}
-
-func (p *Pager) page(id Pgid) *Page {
-	if p, ok := p.pager[id]; ok {
-		return p
+func (p *page) getType() string {
+	if (p.flags & metaFlag) != 0 {
+		return MetaPage
 	}
-	return p.db.GetPage(id)
+	if (p.flags & internalFlag) != 0 {
+		return InternalPage
+	}
+	if (p.flags & leafFlag) != 0 {
+		return LeafPage
+	}
+	debug("Unknown page")
+	return UnknownPage
+}
+
+func (p *page) getMeta(i int) *meta {
+	return &(*[maxPageIndex]meta)(unsafe.Pointer(&p.metaAddr))[i]
+}
+
+func (p *page) getDataptr()
+
+func (p *page) getKey(i int) keyType {
+	meta := p.getMeta(i)
+	buf := (*[maxArraySize]byte)(unsafe.Pointer(kvm))
+	return buf[kvm.offset : kvm.offset+kvm.keySize]
+}
+
+func (p *page) getValue(i int) valueType {
+	buf := (*[maxArraySize]byte)(unsafe.Pointer(kvm))
+	return buf[kvm.offset+kvm.keySize : kvm.offset+kvm.keySize+kvm.valueSize]
+}
+
+func (p *page) getChildPgid(i int) pgid {
+	return im.childID
 }
