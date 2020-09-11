@@ -8,45 +8,76 @@ import (
 
 const (
 	// InternalFlag marks page as internal node
-	InternalFlag = 0x01
+	metaFlag = 0x01
 
-	// LeafFlag marks page as leaf
-	LeafFlag = 0x02
+	// internalFlag marks page as leaf
+	internalFlag = 0x02
+
+	// leafFlag
+	leafFlag = 0x04
+
+	MetaPage     = "MetaPage"
+	InternalPage = "InternalPage"
+	LeafPage     = "LeafPage"
+	UnknownPage  = "UnknownPage"
 
 	MaxAllocSize = 0xFFFFFFF
 	maxPageIndex = 0x7FFFFFF
 	KVMetaSize   = int(unsafe.Sizeof(KVMeta{}))
 )
 
-// Pgid is page id
-type pgid uint64
-
-// Page represents one mmap page
+// page is the mmap storage block
 // layout:
-// page struct | child pgid | child pgid | .. | (p.Data)meta | meta | .. | key | value | key | value | ..
+// page struct | list of KVMeta or IndexMeta | (*DataPtr) keys or keys with values
 type page struct {
 	// Each page has its index
-	ID pgid
-	// Flag tell the page is leaf or not
+	ID uint64
+
+	// Flag marks page type
 	Flags uint16
-	// Count is inode count
-	Count uint16
-	// ChildPtr points to starting address of children pgid array
-	// Empty when page is leaf
-	ChildPtr uintptr
-	// Meta points to starting address of KV metadata
-	MetaPtr uintptr
+
+	// Overflow is 0 for single page
+	Overflow uint32
+
+	// NumKeys is key count
+	NumKeys uint16
+
+	// DataPrt points to starting address of metadata
+	DataPtr uintptr
 }
 
 // KVMeta stores offset and size of one KV pair
-type KVMeta struct {
+type kvMeta struct {
 	// Offset represents offset between KV content and this Meta struct
 	// in bytes
 	Offset uint32
+
 	// Keysz is the length of the key
-	Keysz uint32
+	KeySize uint32
+
 	// Valuesz is the length of the value
-	Valuesz uint32
+	ValueSize uint32
+}
+
+type indexMeta struct {
+	Offset uint32
+
+	KeySize uint32
+
+	ChildID uint32
+}
+
+func (p *page) getType() string {
+	if (p.Flags & metaFlag) != 0 {
+		return MetaPage
+	}
+	if (p.Flags & internalFlag) != 0 {
+		return InternalPage
+	}
+	if (p.Flags & leafFlag) != 0 {
+		return LeafPage
+	}
+	return UnknownPage
 }
 
 // GetChildPgid returns child pgid for given index
