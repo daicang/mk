@@ -4,8 +4,6 @@ import (
 	"os"
 	"syscall"
 	"unsafe"
-
-	"github.com/daicang/mk/pkg/page"
 )
 
 const (

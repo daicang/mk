@@ -17,12 +17,6 @@ func (k keyType) equalTo(other keyType) bool {
 	return bytes.Equal(k, other)
 }
 
-func _assert(condition bool, msg string, v ...interface{}) {
-	if !condition {
-		panic(fmt.Sprintf("assertion failed: "+msg, v...))
-	}
-}
-
 type pair struct {
 	key   keyType
 	value valueType
@@ -32,8 +26,8 @@ type pair struct {
 // len(values) = 0 or len(index)
 // len(children) = len(index) + 1
 type node struct {
-	// id is the node id
-	id uint64
+	// pgid is the id of mapped page
+	pgid pgid
 
 	// isLeaf marks leaf nodes
 	isLeaf bool
@@ -102,11 +96,14 @@ func (n *node) minKeys() int {
 
 // String returns string representation of node
 func (n *node) String() string {
-	return fmt.Sprintf("node%d", n.id)
+	return fmt.Sprintf("node%d", n.pgid)
 }
 
 func newNode() *node {
 	return &node{
+		pgid:     0,
+		isLeaf:   false,
+		balanced: false,
 		parent:   nil,
 		index:    []keyType{},
 		values:   []valueType{},
@@ -116,24 +113,59 @@ func newNode() *node {
 
 func (n *node) read(p *page) {
 	nodeType := p.getType()
-	_assert((nodeType == InternalPage || nodeType == LeafPage), "Invalid page type %s", nodeType)
 
-	n.id = p.ID
+	n.pgid = p.ID
 	if nodeType == InternalPage {
 		n.isLeaf = false
-		for i := range p.NumKeys {
-
+		for i := 0; i < p.numKeys; i++ {
+			im := p.getIndexMeta(i)
+			n.index = append(n.index, im.getKey())
+			// TODO: how read handles children? by pointer or pgid?
+			// n.children = append(n.children, im.getChildPgid())
 		}
 
 	} else {
 		n.isLeaf = true
+		for i := 0; i < p.numKeys; i++ {
+			kvm := p.getKvMeta(i)
+			n.index = append(n.index, kvm.getKey())
+			n.values = append(n.values, kvm.getValue())
+		}
 
 	}
-
 }
 
 func (n *node) write(p *page) {
+	if n.isLeaf {
+		p.flags |= leafFlag
+		p.numKeys = len(n.index)
+		offset := len(n.index) * kvMetaSize
 
+		for i := 0; i < len(n.index); i++ {
+			kvm := p.getKvMeta(i)
+			kvm.offset = offset
+			kvm.keySize = len(n.index[i])
+			kvm.valueSize = len(n.values[i])
+
+			offset -= kvMetaSize
+			offset += kvm.keySize + kvm.valueSize
+		}
+
+	} else {
+		p.flags |= internalFlag
+		p.numKeys = len(n.index)
+		offset := len(n.index) * kvMetaSize
+
+		for i := 0; i < len(n.index); i++ {
+			im := p.getIndexMeta(i)
+			im.offset = offset
+			im.keySize = len(n.index[i])
+			im.childID = n.children[i].pgid
+
+			offset -= indexMetaSize
+			offset += im.keySize
+		}
+	}
 }
 
 // get searches given key from subtree, returns (found, value)
@@ -196,14 +228,16 @@ func (n *node) search(key keyType) (bool, int) {
 
 // insertValueAt places value at given position of node.values
 func (n *node) insertValueAt(i int, value valueType) {
-	_assert(i < len(n.values), "insertValueAt: invalid i=%s, len=%s", i, len(n.values))
+	assert(n.isLeaf, "insert value for non-leaf node")
+	assert(i < len(n.values), "insertValueAt: invalid i=%s, len=%s", i, len(n.values))
 	n.values = append(n.values, valueType{})
 	copy(n.values[i+1:], n.values[i:])
 	n.values[i] = value
 }
 
 func (n *node) removeValueAt(i int) valueType {
-	_assert(i < len(n.values), "removeValueAt: invalid i=%s, len=%s", i, len(n.values))
+	assert(n.isLeaf, "remove value for non-leaf node")
+	assert(i < len(n.values), "removeValueAt: invalid i=%s, len=%s", i, len(n.values))
 	oldValue := n.values[i]
 	copy(n.values[i:], n.values[i+1:])
 	n.values = n.values[:len(n.values)-1]
