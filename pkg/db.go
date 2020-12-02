@@ -326,11 +326,7 @@ func (db *DB) startMmap(requiredSize int) bool {
 	db.meta0 = bufferPage(*db.mmBuf, 0).toMeta()
 	db.meta1 = bufferPage(*db.mmBuf, 1).toMeta()
 
-<<<<<<< HEAD
 	return true
-=======
-	return nil
->>>>>>> e7bd817... Change layout & add log logic
 }
 
 // pageFromMmap returns page from memory map
