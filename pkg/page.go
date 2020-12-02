@@ -16,7 +16,6 @@ const (
 	FreelistPage = "FreelistPage"
 	InternalPage = "InternalPage"
 	LeafPage     = "LeafPage"
-	UnknownPage  = "UnknownPage"
 
 	pageHeaderSize = int(unsafe.Sizeof(page{}))
 	pairSize       = int(unsafe.Sizeof(pair{}))
@@ -36,12 +35,13 @@ type page struct {
 	// Each page has its index
 	id pgid
 
-	tx *tx
+	// Which transaction is the page allocated at
+	tx *Tx
 
-	// flag marks page type
+	// Page type flag
 	flags uint16
 
-	// overflow is number of following overflow pages, 0 for single page
+	// Following overflow page counter, 0 for single page
 	overflow int
 
 	// numKeys is key count
@@ -89,6 +89,18 @@ func (p *page) String() string {
 	return fmt.Sprintf("%s[%d] %d keys, overflow=%d", p.getType(), p.id, p.numKeys, p.overflow)
 }
 
+func (p *page) KeyCount() int {
+	return p.numKeys
+}
+
+func (p *page) SetFlag(flag uint16) {
+	p.flags |= flag
+}
+
+func (p *page) SetPgid(i pgid) {
+	p.id = i
+}
+
 func (p *page) isMeta() bool {
 	return (p.flags & metaPageFlag) != 0
 }
@@ -123,9 +135,7 @@ func (p *page) getType() string {
 		return LeafPage
 	}
 
-	log.Info("Unknown page")
-
-	return UnknownPage
+	panic("Unknown page")
 }
 
 // toMeta converts page to DB meta struct
@@ -142,24 +152,24 @@ func (p *page) free() {
 }
 
 func (p *page) getPair(i int) *pair {
-	return &(*[maxArrSize]pair)(unsafe.Pointer(&p.pairs))[i]
+	return &(*[maxMmapSize]pair)(unsafe.Pointer(&p.pairs))[i]
 }
 
-func (p *page) getKey(i int) KeyType {
+func (p *page) getKeyAt(i int) KeyType {
 	pair := p.getPair(i)
-	buf := (*[maxMmSize]byte)(unsafe.Pointer(&p.pairs))[pair.offset:]
+	buf := (*[maxMmapSize]byte)(unsafe.Pointer(&p.pairs))[pair.offset:]
 
 	return buf[:pair.keySize]
 }
 
-func (p *page) getValue(i int) ValueType {
+func (p *page) getValueAt(i int) ValueType {
 	if !p.isLeaf() {
 		panic("Must call getValue on leaf node")
 	}
 
 	pair := p.getPair(i)
 	valueOffset := pair.offset + pair.keySize
-	buf := (*[maxMmSize]byte)(unsafe.Pointer(&p.pairs))[valueOffset:]
+	buf := (*[maxMmapSize]byte)(unsafe.Pointer(&p.pairs))[valueOffset:]
 
 	return buf[:pair.valueSize]
 }

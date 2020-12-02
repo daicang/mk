@@ -1,55 +1,40 @@
-package mk_test
+package mk
 
-import (
-	"testing"
+// import (
+// 	"testing"
+// )
 
-	mk "github.com/daicang/mk/pkg"
-	fuzz "github.com/google/gofuzz"
-)
+// var (
+// 	dataPath = "/Users/cang.dai/go/src/github.com/daicang/mk/data"
+// )
 
-var (
-	dataPath = "~/go/src/github.com/daicang/mk/data"
-)
+// func TestDB(t *testing.T) {
+// 	kvs := randomKV(1000)
+// 	opt := Options{
+// 		ReadOnly: false,
+// 		Path:     dataPath,
+// 	}
 
-func DBTest(t *testing.T) {
-	f := fuzz.New()
+// 	db, ok := Open(opt)
+// 	if !ok {
+// 		t.Errorf("Failed to open DB")
+// 	}
 
-	kvs := map[string]string{}
+// 	tx, err := db.NewTransaction(true)
+// 	if err != nil {
+// 		panic(err)
+// 	}
 
-	for i := 0; i < 1000; i++ {
-		var key, value string
+// 	for key, value := range kvs {
+// 		found, old := tx.Set([]byte(key), []byte(value))
+// 		if found {
+// 			t.Errorf("Found should be false: old=%s", old)
+// 		}
+// 	}
 
-		f.Fuzz(&key)
-		f.Fuzz(&value)
+// 	ok = tx.Commit()
+// 	if !ok {
+// 		t.Errorf("Failed to commit")
+// 	}
 
-		kvs[key] = value
-	}
-
-	opt := mk.Options{
-		ReadOnly: false,
-		Path:     dataPath,
-	}
-
-	db, err := mk.Open(opt)
-	if err != nil {
-		panic(err)
-	}
-
-	tx, err := db.NewTransaction(true)
-	if err != nil {
-		panic(err)
-	}
-
-	for key, value := range kvs {
-		found, old := tx.Set([]byte(key), []byte(value))
-		if found {
-			t.Errorf("Found should be false: old=%s", old)
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
-	}
-
-}
+// }

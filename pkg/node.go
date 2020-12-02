@@ -1,16 +1,12 @@
 package mk
 
 import (
-	"bytes"
 	"fmt"
 	"sort"
 	"unsafe"
 )
 
 const (
-	// Minimum keys per page is 2
-	minKeys = 2
-
 	// Maximum key size is 1MB.
 	maxKeySize = 1 << 20
 
@@ -18,27 +14,12 @@ const (
 	maxValueSize = 1 << 30
 )
 
-// KeyType represents type for key
-type KeyType []byte
-
-// ValueType represents type for value
-type ValueType []byte
-
-func (k KeyType) lessThan(other KeyType) bool {
-	return bytes.Compare(k, other) == -1
-}
-
-func (k KeyType) equalTo(other KeyType) bool {
-	return bytes.Equal(k, other)
-}
-
-// node represents the b+tree node,
-// it holds the same number of keys and values
-// for both leaf and internal node.
+// node represents b+tree node for indexing.
 type node struct {
 	// pgid is the id of mapped page.
 	pgid pgid
 
+	// pointer to transaction this node is created at.
 	tx *Tx
 
 	// isLeaf marks leaf nodes.
@@ -48,7 +29,6 @@ type node struct {
 	balanced bool
 
 	// spilled node skips spill.
-	//
 	spilled bool
 
 	// key in parent node.
@@ -56,6 +36,8 @@ type node struct {
 
 	// parent is pointer to parent node.
 	parent *node
+
+	// Note: node holds the same number of keys and values(or children)
 
 	// keys in this node.
 	keys []KeyType
@@ -91,10 +73,10 @@ func (n *node) read(p *page) {
 	n.isLeaf = p.isLeaf()
 
 	for i := 0; i < p.numKeys; i++ {
-		n.keys = append(n.keys, p.getKey(i))
+		n.keys = append(n.keys, p.getKeyAt(i))
 
 		if n.isLeaf {
-			n.values = append(n.values, p.getValue(i))
+			n.values = append(n.values, p.getValueAt(i))
 		} else {
 			n.childPgids = append(n.childPgids, p.getChildPgid(i))
 		}
@@ -109,7 +91,7 @@ func (n *node) read(p *page) {
 func (n *node) write(p *page) {
 	p.numKeys = len(n.keys)
 	offset := len(n.keys) * pairSize
-	buf := (*[maxMmSize]byte)(unsafe.Pointer(&p.pairs))[offset:]
+	buf := (*[maxMmapSize]byte)(unsafe.Pointer(&p.pairs))[offset:]
 
 	if n.isLeaf {
 		p.flags |= leafPageFlag
@@ -149,20 +131,68 @@ func (n *node) write(p *page) {
 // search searches key in index, returns (found, first eq/larger index)
 // when all indexes are smaller, returned index is len(index)
 func (n *node) search(key KeyType) (bool, int) {
-	larger := sort.Search(len(n.keys), func(i int) bool {
-		return key.lessThan(n.keys[i])
+	i := sort.Search(len(n.keys), func(i int) bool {
+		return n.keys[i].greaterEqual(key)
 	})
-	if larger > 0 && key.equalTo(n.keys[larger-1]) {
-		return true, larger - 1
+
+	if i < len(n.keys) && key.equalTo(n.getKeyAt(i)) {
+		return true, i
 	}
-	return false, larger
+
+	return false, i
 }
 
 // insertKeyAt inserts key at given index.
 func (n *node) insertKeyAt(i int, key KeyType) {
+	if i > len(n.keys) {
+		panic("Index out of bound")
+	}
+
 	n.keys = append(n.keys, KeyType{})
 	copy(n.keys[i+1:], n.keys[i:])
 	n.keys[i] = key
+}
+
+// insertValueAt places value at given index.
+func (n *node) insertValueAt(i int, value ValueType) {
+	if !n.isLeaf {
+		panic("Leaf-only operation")
+	}
+
+	if i > n.keyCount() {
+		panic("Index out of bound")
+	}
+
+	n.values = append(n.values, ValueType{})
+	copy(n.values[i+1:], n.values[i:])
+	n.values[i] = value
+}
+
+// insertChildAt inserts child at given index.
+func (n *node) insertChildAt(i int, child *node) {
+	if n.isLeaf {
+		panic("Internal-node-only operation")
+	}
+
+	if i >= n.keyCount() {
+		panic("Index out of bound")
+	}
+
+	n.childPtrs = append(n.childPtrs, nil)
+	copy(n.childPtrs[i+1:], n.childPtrs[i:])
+	n.childPtrs[i] = child
+
+	n.childPgids = append(n.childPgids, 0)
+	copy(n.childPgids[i+1:], n.childPgids[i:])
+	n.childPgids[i] = child.pgid
+}
+
+func (n *node) getKeyAt(i int) KeyType {
+	return n.keys[i]
+}
+
+func (n *node) getValueAt(i int) ValueType {
+	return n.values[i]
 }
 
 // removeKeyAt removes key at given index.
@@ -177,21 +207,6 @@ func (n *node) removeKeyAt(i int) KeyType {
 	n.keys = n.keys[:len(n.keys)-1]
 
 	return removed
-}
-
-// insertValueAt places value at given index.
-func (n *node) insertValueAt(i int, value ValueType) {
-	if !n.isLeaf {
-		panic("Leaf-only operation")
-	}
-
-	if i > len(n.values) {
-		panic("Invalid index")
-	}
-
-	n.values = append(n.values, ValueType{})
-	copy(n.values[i+1:], n.values[i:])
-	n.values[i] = value
 }
 
 // removeValueAt removes value at given index.
@@ -212,25 +227,6 @@ func (n *node) removeValueAt(i int) ValueType {
 	return oldValue
 }
 
-// insertChildAt inserts child at given index.
-func (n *node) insertChildAt(i int, child *node) {
-	if n.isLeaf {
-		panic("Internal-node-only operation")
-	}
-
-	if i >= len(n.childPtrs) {
-		panic("Index out of bound")
-	}
-
-	n.childPtrs = append(n.childPtrs, nil)
-	copy(n.childPtrs[i+1:], n.childPtrs[i:])
-	n.childPtrs[i] = child
-
-	n.childPgids = append(n.childPgids, 0)
-	copy(n.childPgids[i+1:], n.childPgids[i:])
-	n.childPgids[i] = child.pgid
-}
-
 // removeChildAt removes child at given index.
 func (n *node) removeChildAt(i int) {
 	if n.isLeaf {
@@ -249,7 +245,7 @@ func (n *node) removeChildAt(i int) {
 }
 
 // size returns page size after mmap
-func (n *node) size() int {
+func (n *node) mapSize() int {
 	sz := pageHeaderSize + len(n.keys)*pairSize
 
 	if n.isLeaf {
@@ -265,13 +261,12 @@ func (n *node) size() int {
 	return sz
 }
 
-// Overfill returns true when size > pageSize and have more than 2x minKeys.
-func (n *node) overfill() bool {
-	return len(n.keys) > 2*minKeys && n.size() > pageSize
+func (n *node) keyCount() int {
+	return len(n.keys)
 }
 
 func (n *node) underfill() bool {
-	return len(n.keys) < minKeys || n.size() < pageSize/4
+	return len(n.keys) < minKeyCount || n.mapSize() < pageSize/4
 }
 
 func (n *node) split() []*node {
@@ -279,7 +274,7 @@ func (n *node) split() []*node {
 	node := n
 
 	for {
-		_, next := node.splitTwo()
+		next := node.splitTwo()
 
 		if next == nil {
 			break
@@ -292,15 +287,17 @@ func (n *node) split() []*node {
 	return nodes
 }
 
-func (n *node) splitTwo() (*node, *node) {
-	fillPercent := 0.5
-
-	if !n.overfill() {
-		return n, nil
+// splitTwo splits node into two.
+func (n *node) splitTwo() *node {
+	if n.keyCount() <= splitKeyCount {
+		return nil
 	}
 
-	// Here we have oversized one page and have more than 2x minKeys
-	// Where to split page: keys >= minKeys and size >= fillPercent * pageSize
+	if n.mapSize() <= pageSize {
+		return nil
+	}
+
+	// Split oversized page with > splitKeyCount keys
 	size := pageHeaderSize
 	splitIndex := 0
 
@@ -312,7 +309,8 @@ func (n *node) splitTwo() (*node, *node) {
 			size += len(n.values[i])
 		}
 
-		if i >= minKeys && size >= int(float64(pageSize)*fillPercent) {
+		// Split at key >= minKeyCount and size >= fillPercent * pageSize
+		if i >= minKeyCount && size >= int(float64(pageSize)*fillPercent) {
 			splitIndex = i
 
 			break
@@ -340,19 +338,19 @@ func (n *node) splitTwo() (*node, *node) {
 		n.values = n.values[:splitIndex]
 	}
 
-	return n, &next
+	return &next
 }
 
 // spill writes node to dirty pages.
-func (n *node) spill() error {
+func (n *node) spill() bool {
 	if n.spilled {
-		return nil
+		return true
 	}
 
 	for _, child := range n.childPtrs {
-		err := child.spill()
-		if err != nil {
-			return err
+		ok := child.spill()
+		if !ok {
+			return false
 		}
 	}
 
@@ -360,14 +358,14 @@ func (n *node) spill() error {
 
 	for _, node := range nodes {
 		if node.pgid > 0 {
-			node.tx.db.freelist.free(node.tx.id, node.tx.page(node.pgid))
+			node.tx.db.freelist.free(node.tx.id, node.tx.getPage(node.pgid))
 			node.pgid = 0
 		}
 
 		// TODO: use tx.allocate
-		p, err := node.tx.db.allocate((n.size() / pageSize) + 1)
-		if err != nil {
-			return err
+		p, ok := node.tx.db.allocate((n.mapSize() / pageSize) + 1)
+		if !ok {
+			return false
 		}
 
 		node.pgid = p.id
@@ -394,7 +392,7 @@ func (n *node) spill() error {
 		return n.parent.spill()
 	}
 
-	return nil
+	return true
 }
 
 // rebalance merges underfill nodes
