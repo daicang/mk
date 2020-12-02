@@ -35,34 +35,36 @@ func (t *Tx) close() {
 
 // Commit rebalances b+tree and write changes to disk,
 // then closes the transaction.
-func (t *Tx) Commit() error {
+func (t *Tx) Commit() bool {
 	if !t.writable {
-		return errReadOnly
+		log.Info("Commit on read only tx")
+
+		return false
 	}
 
 	for _, node := range t.nodes {
 		node.rebalance()
 	}
 
-	err := t.root.spill()
-	if err != nil {
-		return err
+	ok := t.root.spill()
+	if !ok {
+		return false
 	}
 
 	t.root = t.root.root()
 
-	err = t.write()
-	if err != nil {
+	ok = t.write()
+	if !ok {
 		t.rollback()
 	}
 
 	t.close()
 
-	return nil
+	return true
 }
 
 // write writes all pages hold by this transaction.
-func (t *Tx) write() error {
+func (t *Tx) write() bool {
 	pages := pages{}
 
 	for _, p := range t.pages {
@@ -75,20 +77,20 @@ func (t *Tx) write() error {
 	for _, p := range pages {
 		pos := int64(p.id) * int64(pageSize)
 		size := (p.overflow + 1) * pageSize
-		buf := (*[maxArrSize]byte)(unsafe.Pointer(p))
+		buf := (*[maxMmapSize]byte)(unsafe.Pointer(p))
 
 		_, err := t.db.file.WriteAt(buf[:size], pos)
 		if err != nil {
-			log.Info("Failed to write page")
+			log.Error(err, "Failed to write page")
 
-			return err
+			return false
 		}
 	}
 
 	// Return single pages to page pool
 	for _, p := range pages {
 		if p.overflow == 0 {
-			buf := (*[maxArrSize]byte)(unsafe.Pointer(p))[:pageSize]
+			buf := (*[maxMmapSize]byte)(unsafe.Pointer(p))[:pageSize]
 			for i := range buf {
 				buf[i] = 0
 			}
@@ -97,7 +99,7 @@ func (t *Tx) write() error {
 		}
 	}
 
-	return nil
+	return true
 }
 
 // TODO:
@@ -105,14 +107,15 @@ func (t *Tx) rollback() {
 	// delete()
 }
 
-// page checks page from buffer first, when not found,
-// return page from memory map.
+// getPage returns page for this transaction.
 func (t *Tx) getPage(id pgid) *page {
+	// Check page buffer first
 	p, exist := t.pages[id]
 	if exist {
 		return p
 	}
 
+	// If not found, return page from memory map
 	p = t.db.pageFromMmap(id)
 	t.pages[id] = p
 
