@@ -25,7 +25,7 @@ type node struct {
 	// isLeaf marks leaf nodes.
 	isLeaf bool
 
-	// balanced node skips rebalance.
+	// balanced node skips tryMerge.
 	balanced bool
 
 	// spilled node skips spill.
@@ -90,7 +90,7 @@ func (n *node) read(p *page) {
 // write writes node to given page
 func (n *node) write(p *page) {
 	p.numKeys = len(n.keys)
-	offset := len(n.keys) * pairSize
+	offset := len(n.keys) * pairHeaderSize
 	buf := (*[maxMmapSize]byte)(unsafe.Pointer(&p.pairs))[offset:]
 
 	if n.isLeaf {
@@ -246,29 +246,24 @@ func (n *node) removeChildAt(i int) {
 
 // size returns page size after mmap
 func (n *node) mapSize() int {
-	sz := pageHeaderSize + len(n.keys)*pairSize
+	size := pageHeaderSize + pairHeaderSize*n.keyCount()
 
-	if n.isLeaf {
-		for i, key := range n.keys {
-			sz += len(key) + len(n.values[i])
-		}
-	} else {
-		for _, key := range n.keys {
-			sz += len(key)
+	for i := range n.keys {
+		size += len(n.getKeyAt(i))
+
+		if n.isLeaf {
+			size += len(n.getValueAt(i))
 		}
 	}
 
-	return sz
+	return size
 }
 
 func (n *node) keyCount() int {
 	return len(n.keys)
 }
 
-func (n *node) underfill() bool {
-	return len(n.keys) < minKeyCount || n.mapSize() < pageSize/4
-}
-
+// split splits node into multiple siblings according to size and keys.
 func (n *node) split() []*node {
 	nodes := []*node{}
 	node := n
@@ -287,7 +282,9 @@ func (n *node) split() []*node {
 	return nodes
 }
 
-// splitTwo splits node into two.
+// splitTwo splits node into two if:
+// 1. node map size > pageSize, and
+// 2. node has more than splitKeyCount
 func (n *node) splitTwo() *node {
 	if n.keyCount() <= splitKeyCount {
 		return nil
@@ -302,15 +299,15 @@ func (n *node) splitTwo() *node {
 	splitIndex := 0
 
 	for i, key := range n.keys {
-		size += pairSize
+		size += pairHeaderSize
 		size += len(key)
 
 		if n.isLeaf {
 			size += len(n.values[i])
 		}
 
-		// Split at key >= minKeyCount and size >= fillPercent * pageSize
-		if i >= minKeyCount && size >= int(float64(pageSize)*fillPercent) {
+		// Split at key >= minKeyCount and size >= splitPagePercent * pageSize
+		if i >= minKeyCount && size >= int(float64(pageSize)*splitPagePercent) {
 			splitIndex = i
 
 			break
@@ -341,82 +338,72 @@ func (n *node) splitTwo() *node {
 	return &next
 }
 
-// spill writes node to dirty pages.
+// spill recursively splits node and writes to memory pages(not to disk).
 func (n *node) spill() bool {
 	if n.spilled {
 		return true
 	}
 
-	for _, child := range n.childPtrs {
-		ok := child.spill()
+	// Spill children first
+	for i := 0; i < len(n.childPtrs); i++ {
+		ok := n.childPtrs[i].spill()
 		if !ok {
 			return false
 		}
 	}
 
-	nodes := n.split()
-
-	for _, node := range nodes {
+	for _, node := range n.split() {
+		// Return node's page to freelist
 		if node.pgid > 0 {
 			node.tx.db.freelist.free(node.tx.id, node.tx.getPage(node.pgid))
 			node.pgid = 0
 		}
 
-		// TODO: use tx.allocate
-		p, ok := node.tx.db.allocate((n.mapSize() / pageSize) + 1)
+		// Then allocate page for node.
+		// For simplicity, allocate one more page
+		p, ok := node.tx.allocate((n.mapSize() / pageSize) + 1)
 		if !ok {
 			return false
 		}
 
 		node.pgid = p.id
+
+		// Write to memory page
 		node.write(p)
+
 		node.spilled = true
 
 		if node.key == nil {
 			node.key = node.keys[0]
 		}
-
-		if n.parent != nil {
-			found, i := n.parent.search(node.key)
-			if found {
-				n.parent.childPgids[i] = node.pgid
-			} else {
-				n.parent.insertChildAt(i, node)
-			}
-		}
-	}
-
-	// TODO: why we need to call spill for root?
-	if n.parent != nil && n.parent.pgid == 0 {
-		// n.children = nil
-		return n.parent.spill()
 	}
 
 	return true
 }
 
-// rebalance merges underfill nodes
-func (n *node) rebalance() {
+// tryMerge merges underfill nodes.
+func (n *node) tryMerge() {
 	if n.balanced {
 		return
 	}
 
 	n.balanced = true
 
-	if !n.underfill() {
+	if n.keyCount() < minKeyCount || n.mapSize() < int(float64(pageSize)*mergePagePercent) {
 		return
 	}
 
-	// Root case.
+	// Root case
 	if n.parent == nil {
-
-		// Bring up the only child.
+		// Bring up the only child
 		if !n.isLeaf && len(n.keys) == 1 {
 			child := n.childPtrs[0]
 
 			n.isLeaf = child.isLeaf
+
 			n.keys = child.keys[:]
 			n.values = child.values[:]
+
 			n.childPtrs = child.childPtrs[:]
 			n.childPgids = child.childPgids[:]
 
@@ -431,8 +418,8 @@ func (n *node) rebalance() {
 		return
 	}
 
-	// Remove empty node.
-	if len(n.keys) == 0 {
+	// Remove empty node
+	if n.keyCount() == 0 {
 		found, i := n.parent.search(n.key)
 		if !found {
 			panic("Key not found in parent")
@@ -443,50 +430,56 @@ func (n *node) rebalance() {
 
 		n.free()
 
-		n.parent.rebalance()
+		n.parent.tryMerge()
 
 		return
 	}
 
 	var from *node
 	var to *node
-	var fromIndex int
+	var mergeFromIdx int
 
-	// Merge with left sibling, if already leftmost, right sibling
 	if n == n.parent.childPtrs[0] {
-		fromIndex = 1
+		// idx = 0, merge node[1] -> node[0]
+		mergeFromIdx = 1
 		from = n.parent.childPtrs[1]
 		to = n
 	} else {
+		// Merge to node[i-1]
 		_, i := n.parent.search(n.key)
-		fromIndex = i
+
+		mergeFromIdx = i
 		from = n
 		to = n.parent.childPtrs[i-1]
 	}
 
-	// We can ensure nodes on the same level are both leaf or internal
+	// Check sibling
 	if from.isLeaf != to.isLeaf {
-		panic("Internal node and leaf node should not be on the same level")
+		panic("Sibling nodes should have same type")
 	}
 
 	// Move children, empty for leaf node.
 	for i, ch := range from.childPtrs {
-		to.childPgids = append(to.childPgids, from.childPgids[i])
 		ch.parent = to
+
+		to.childPgids = append(to.childPgids, from.childPgids[i])
 		to.childPtrs = append(to.childPtrs, ch)
+
 		from.removeChildAt(i)
 	}
 
 	to.keys = append(to.keys, from.keys...)
 	to.values = append(to.values, from.values...)
 
-	n.parent.removeKeyAt(fromIndex)
-	n.parent.removeChildAt(fromIndex)
+	n.parent.removeKeyAt(mergeFromIdx)
+	n.parent.removeChildAt(mergeFromIdx)
 
-	n.parent.rebalance()
+	n.parent.tryMerge()
 }
 
-// TODO: add freeList logic
+// free returns page to freelist
 func (n *node) free() {
-
+	if n.pgid != 0 {
+		n.tx.db.freelist.free(n.tx.id, n.tx.getPage(n.pgid))
+	}
 }

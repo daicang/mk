@@ -1,6 +1,6 @@
 # mk
 
-Minimal, runable homemade K-v storage, for learning and fun.
+*M*inimal, runable *K*-v storage, for learning and fun.
 
 ## Introduction
 

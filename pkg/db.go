@@ -107,7 +107,7 @@ func Open(opts Options) (*DB, bool) {
 		return make([]byte, pageSize)
 	}}
 
-	ok = db.startMmap(minMmapSize)
+	ok = db.doMmap(minMmapSize)
 	if !ok {
 		return nil, false
 	}
@@ -256,7 +256,7 @@ func (db *DB) allocate(count int) (*page, bool) {
 
 	// Resize mmap if exceed
 	if newSize > db.mmapSize {
-		ok := db.startMmap(newSize)
+		ok := db.doMmap(newSize)
 		if !ok {
 			return nil, false
 		}
@@ -294,8 +294,8 @@ func roundMmapSize(size int) int {
 	return size
 }
 
-// startMmap starts memory map for at least minsz.
-func (db *DB) startMmap(requiredSize int) bool {
+// doMmap starts memory map for at least minsz.
+func (db *DB) doMmap(requiredSize int) bool {
 	fInfo, err := db.file.Stat()
 	if err != nil {
 		log.Error(err, "Failed to stat mmap file")

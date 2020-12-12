@@ -87,4 +87,30 @@ func TestNodeSplitTwo(t *testing.T) {
 		t.Errorf("Should not split node")
 	}
 
+	keyCount := 64
+	kvSize := (2*pageSize-pageHeaderSize)/keyCount - pairHeaderSize
+	keySize := kvSize / 2
+	valueSize := kvSize / 2
+
+	// Create a node with 2x page size
+	n2 := sizedNode(keyCount, keySize, valueSize)
+
+	t.Logf("nodeSize=%d, kvSize=%d", n2.mapSize(), kvSize)
+	t.Logf("keySize=%d, valueSize=%d", keySize, valueSize)
+
+	n3 := n2.splitTwo()
+
+	if n3 == nil {
+		t.Errorf("Should split two")
+	}
+
+	i := (int(float64(pageSize)*splitPagePercent) - pageHeaderSize) / (pairHeaderSize + kvSize)
+
+	if n2.keyCount() != i {
+		t.Errorf("Incorrect split point: expect %d, get %d", i, n2.keyCount())
+	}
+
+	if n3.keyCount() != keyCount-i {
+		t.Errorf("Incorrect new node: expect %d keys, get %d", keyCount-i, n3.keyCount())
+	}
 }

@@ -7,7 +7,7 @@ import (
 
 type txid int
 
-// Tx represents transaction
+// Tx represents transaction.
 type Tx struct {
 	db *DB
 
@@ -29,12 +29,20 @@ type Tx struct {
 	pages map[pgid]*page
 }
 
+// allocate returns contiguous pages.
+func (t *Tx) allocate(count int) (*page, bool) {
+	if !t.writable {
+		panic("Read only tx can't allocate")
+	}
+
+	return t.db.allocate(count)
+}
+
 func (t *Tx) close() {
 
 }
 
-// Commit rebalances b+tree and write changes to disk,
-// then closes the transaction.
+// Commit balance b+tree, write changes to disk, and close transaction.
 func (t *Tx) Commit() bool {
 	if !t.writable {
 		log.Info("Commit on read only tx")
@@ -42,20 +50,32 @@ func (t *Tx) Commit() bool {
 		return false
 	}
 
+	// Merge underfill nodes
 	for _, node := range t.nodes {
-		node.rebalance()
+		node.tryMerge()
 	}
 
+	// Split nodes and write to memory page
 	ok := t.root.spill()
 	if !ok {
+		log.Info("Failed to spill")
+
+		t.rollback()
+
 		return false
 	}
 
+	// Root may be changed after spill
 	t.root = t.root.root()
 
+	// Write to disk
 	ok = t.write()
 	if !ok {
+		log.Info("Failed to write transaction")
+
 		t.rollback()
+
+		return false
 	}
 
 	t.close()

@@ -1,6 +1,6 @@
 package mk
 
-// DB
+// DB consts.
 const (
 	// Database version
 	DBVersion = 1
@@ -9,7 +9,7 @@ const (
 	Magic = 0xDCDB2020
 )
 
-// Memory mapping
+// Memory mapping consts.
 const (
 	// Memory map initial size is 128KB.
 	minMmapSize = 1 << 17
@@ -21,10 +21,13 @@ const (
 	maxMmapSize = 1 << 34
 )
 
-// B+tree node
+// B+tree node consts.
 const (
-	// fillPercent marks first split point.
-	fillPercent = 0.5
+	// splitPagePercent marks first split point.
+	splitPagePercent = 0.5
+
+	// mergePagePercent
+	mergePagePercent = 0.25
 
 	minKeyCount = 2
 

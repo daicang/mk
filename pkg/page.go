@@ -18,7 +18,7 @@ const (
 	LeafPage     = "LeafPage"
 
 	pageHeaderSize = int(unsafe.Sizeof(page{}))
-	pairSize       = int(unsafe.Sizeof(pair{}))
+	pairHeaderSize = int(unsafe.Sizeof(pair{}))
 )
 
 var (

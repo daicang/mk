@@ -1,6 +1,7 @@
 package mk
 
 import (
+	"crypto/rand"
 	"math"
 
 	fuzz "github.com/google/gofuzz"
@@ -46,7 +47,7 @@ func randomKV(size int) map[string]string {
 
 func randomByteArray(size int) []byte {
 	arr := make([]byte, size)
-	f.Fuzz(arr)
+	rand.Read(arr)
 
 	return arr
 }
@@ -68,8 +69,10 @@ func randomNode(keys int) (map[string]string, *node) {
 	return kvs, &n
 }
 
-func sizedNode(keySize, valueSize, keys int) *node {
-	n := node{}
+func sizedNode(keys, keySize, valueSize int) *node {
+	n := node{
+		isLeaf: true,
+	}
 
 	for i := 0; i < keys; i++ {
 		for {
@@ -77,14 +80,12 @@ func sizedNode(keySize, valueSize, keys int) *node {
 			value := randomByteArray(valueSize)
 
 			found, j := n.search(key)
-			if found {
-				continue
+			if !found {
+				n.insertKeyAt(j, key)
+				n.insertValueAt(j, value)
+
+				break
 			}
-
-			n.insertKeyAt(j, key)
-			n.insertValueAt(j, value)
-
-			break
 		}
 	}
 
