@@ -2,9 +2,6 @@ package mk
 
 // DB consts.
 const (
-	// Database version
-	DBVersion = 1
-
 	// DB file magic
 	Magic = 0xDCDB2020
 )

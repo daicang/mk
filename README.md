@@ -1,25 +1,27 @@
-# mk
+<p align="center">
+    <b>mk</b><br>
+    <i>M</i>inimal <i>K</i>ey-value storage<br>
+    <img src="https://raw.githubusercontent.com/daicang/mk/dev/mk.png" width="200">
+</p>
 
-*M*inimal, runable *K*-v storage, for learning and fun.
+---
 
 ## Introduction
 
-mk intends to be a minimal k-v storage using b+tree and mmap. It is mainly inspired by [BoltDB](https://github.com/boltdb/bolt), [lmdb](https://github.com/LMDB/lmdb) and [btree](https://github.com/google/btree)
-Different from BoltDB, mk doesn't support bucket.
+mk intends to be a minimal runable k-v storage using b+tree and mmap, for learning & fun. Mk is mainly inspired by [BoltDB](https://github.com/boltdb/bolt), [lmdb](https://github.com/LMDB/lmdb) and [btree](https://github.com/google/btree)
 
 ## Operations
 
-mk supports set/get operations
+- set/get/remove
+- transaction. Only one writable transaction is allowed at one time
+- unlike boltdb, bucket is not supported in mk
 
-## Storage layout
+## Indexing and storage
 
-DB file has at least 4 pages on disk. First 2 pages are meta page, then 1 free
+- b+tree indexing
+- mmap-based storage, single file on disk
 
-## Transaction
+## Todos
 
-mk supports multiple operations in one transaction. B+tree rebalancing and sync to disk are delayed until end of each transaction.
-
-
-## Audit
-
-Audit is not implemented yet, have plan to add soon.
+- Support audit
+- Some visualization

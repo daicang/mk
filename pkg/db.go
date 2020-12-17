@@ -1,32 +1,24 @@
 package mk
 
 import (
-	"errors"
 	"os"
 	"sync"
 	"syscall"
 	"unsafe"
 )
 
-var (
-	errReadOnly = errors.New("DB is read only")
-)
-
-// DB is the main database structure.
+// DB represents one database.
 type DB struct {
 	// Path to memory mapping file
 	path string
 
-	//
-	opened bool
-
 	// Readonly mark
 	readOnly bool
 
-	// Database file begins with 2 meta blocks, block 0
+	// First meta block
 	meta0 *Meta
 
-	// Database file begins with 2 meta blocks, block 1
+	// Second meta block
 	meta1 *Meta
 
 	// Memory map file pointer
@@ -59,26 +51,23 @@ type Meta struct {
 	// magic should be mkMagic
 	magic uint32
 
-	//
-	version uint32
+	// root page id
+	root pgid
 
-	// pages is the number of current memory mapped pages
-	// also used as pgid of first new page, since pgid
-	// starts at 0
-	pages pgid
+	// pageCount indicates pgid of next new page
+	pageCount pgid
 }
 
 func (m *Meta) copy() *Meta {
-	new := Meta{
-		magic:   m.magic,
-		version: m.version,
+	return &Meta{
+		magic:     m.magic,
+		root:      m.root,
+		pageCount: m.pageCount,
 	}
-
-	return &new
 }
 
-// Open opens DB with given options.
-func Open(opts Options) (*DB, bool) {
+// InitDB initiates DB with given options.
+func InitDB(opts Options) (*DB, bool) {
 	db := DB{
 		path:     opts.Path,
 		readOnly: opts.ReadOnly,
@@ -87,7 +76,6 @@ func Open(opts Options) (*DB, bool) {
 	_, err := os.Stat(db.path)
 
 	if os.IsNotExist(err) {
-		// Create new DB
 		ok := db.createNew()
 		if !ok {
 			log.Info("Failed to create new DB")
@@ -140,7 +128,6 @@ func (db *DB) createNew() bool {
 
 		m := p.toMeta()
 
-		m.version = DBVersion
 		m.magic = Magic
 	}
 
@@ -172,29 +159,6 @@ func (db *DB) createNew() bool {
 	}
 
 	return true
-}
-
-// NewTransaction starts a new transaction, return err when
-func (db *DB) NewTransaction(writable bool) (*Tx, error) {
-	if writable {
-		if db.readOnly || db.writableTx != nil {
-			return nil, errReadOnly
-		}
-	}
-
-	t := Tx{
-		db:       db,
-		writable: writable,
-		meta:     db.meta0.copy(),
-	}
-
-	db.txs = append(db.txs, &t)
-
-	if writable {
-		db.writableTx = &t
-	}
-
-	return &t, nil
 }
 
 // load initiates DB from file
@@ -251,7 +215,7 @@ func (db *DB) allocate(count int) (*page, bool) {
 	}
 
 	// TODO: why add 1?
-	p.SetPgid(db.writableTx.meta.pages)
+	p.SetPgid(db.writableTx.meta.pageCount)
 	newSize := (int(p.id) + count + 1) * pageSize
 
 	// Resize mmap if exceed
@@ -262,7 +226,7 @@ func (db *DB) allocate(count int) (*page, bool) {
 		}
 	}
 
-	db.writableTx.meta.pages += pgid(count)
+	db.writableTx.meta.pageCount += pgid(count)
 
 	return p, true
 }
@@ -329,8 +293,8 @@ func (db *DB) doMmap(requiredSize int) bool {
 	return true
 }
 
-// pageFromMmap returns page from memory map
-func (db *DB) pageFromMmap(id pgid) *page {
+// getPage returns page from memory map
+func (db *DB) getPage(id pgid) *page {
 	offset := id * pgid(pageSize)
 	return (*page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
 }

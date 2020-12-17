@@ -17,16 +17,82 @@ type Tx struct {
 	// Read-only mark
 	writable bool
 
+	// Pointer to mata struct
 	meta *Meta
-
-	// All accessed nodes in this transaction.
-	nodes map[pgid]*node
 
 	// root points to the b+tree root
 	root *node
 
+	// All accessed nodes in this transaction.
+	nodes map[pgid]*node
+
 	// All accessed pages in this transaction.
 	pages map[pgid]*page
+}
+
+// NewWritableTx creates new writable transaction.
+func NewWritableTx(db *DB) (*Tx, bool) {
+	if db.readOnly {
+		log.Info("Cannot create writable transaction for read-only DB")
+
+		return nil, false
+	}
+
+	if db.writableTx != nil {
+		log.Info("Cannot create multiple writable transaction")
+
+		return nil, false
+	}
+
+	rootPage := db.getPage(db.meta0.root)
+	root := &node{
+		parent: nil,
+	}
+	root.read(rootPage)
+
+	t := Tx{
+		db:       db,
+		id:       1,
+		writable: true,
+		meta:     db.meta0.copy(),
+		root:     root,
+		nodes:    map[pgid]*node{},
+		pages:    map[pgid]*page{},
+	}
+
+	t.nodes[db.meta0.root] = root
+	t.pages[db.meta0.root] = rootPage
+
+	db.txs = append(db.txs, &t)
+	db.writableTx = &t
+
+	return &t, true
+}
+
+// NewReadOnlyTx returns new read-only transaction.
+func NewReadOnlyTx(db *DB) (*Tx, bool) {
+	rootPage := db.getPage(db.meta0.root)
+	root := &node{
+		parent: nil,
+	}
+	root.read(rootPage)
+
+	t := Tx{
+		db:       db,
+		id:       1,
+		writable: false,
+		meta:     db.meta0.copy(),
+		root:     root,
+		nodes:    map[pgid]*node{},
+		pages:    map[pgid]*page{},
+	}
+
+	t.nodes[db.meta0.root] = root
+	t.pages[db.meta0.root] = rootPage
+
+	db.txs = append(db.txs, &t)
+
+	return &t, true
 }
 
 // allocate returns contiguous pages.
@@ -127,7 +193,7 @@ func (t *Tx) rollback() {
 	// delete()
 }
 
-// getPage returns page for this transaction.
+// getPage returns page from pgid.
 func (t *Tx) getPage(id pgid) *page {
 	// Check page buffer first
 	p, exist := t.pages[id]
@@ -136,25 +202,27 @@ func (t *Tx) getPage(id pgid) *page {
 	}
 
 	// If not found, return page from memory map
-	p = t.db.pageFromMmap(id)
+	p = t.db.getPage(id)
 	t.pages[id] = p
 
 	return p
 }
 
-// getNode returns node from given page
-func (t *Tx) getNode(p *page, parent *node) *node {
-	n, exist := t.nodes[p.id]
+// getNode returns node from pgid.
+func (t *Tx) getNode(id pgid, parent *node) *node {
+	n, exist := t.nodes[id]
 	if exist {
 		return n
 	}
 
+	p := t.getPage(id)
+
 	n = &node{
 		parent: parent,
 	}
-	n.read(p)
 
-	t.nodes[p.id] = n
+	n.read(p)
+	t.nodes[id] = n
 
 	return n
 }
@@ -163,9 +231,9 @@ func (t *Tx) getNode(p *page, parent *node) *node {
 func (t *Tx) Get(key KeyType) (bool, ValueType) {
 	curr := t.root
 
-	for curr.isLeaf == false {
+	for !curr.isLeaf {
 		_, i := curr.search(key)
-		curr = curr.childPtrs[i]
+		curr = curr.getChildAt(i)
 	}
 
 	found, i := curr.search(key)
@@ -196,12 +264,12 @@ func (t *Tx) Set(key KeyType, value ValueType) (bool, ValueType) {
 			}
 
 			curr.balanced = false
-			curr.insertValueAt(i, value)
+			curr.insertKeyValueAt(i, key, value)
 
 			return false, ValueType{}
 		}
 
-		curr = curr.childPtrs[i]
+		curr = curr.getChildAt(i)
 	}
 }
 
@@ -222,10 +290,11 @@ func (t *Tx) Remove(key KeyType) (bool, ValueType) {
 			}
 
 			curr.balanced = false
+			_, value := curr.removeKeyValueAt(i)
 
-			return true, curr.removeValueAt(i)
+			return true, value
 		}
 
-		curr = curr.childPtrs[i]
+		curr = curr.getChildAt(i)
 	}
 }

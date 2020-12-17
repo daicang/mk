@@ -15,6 +15,7 @@ const (
 )
 
 // node represents b+tree node for indexing.
+// node holds the same number of keys and values(or children).
 type node struct {
 	// pgid is the id of mapped page.
 	pgid pgid
@@ -31,15 +32,15 @@ type node struct {
 	// spilled node skips spill.
 	spilled bool
 
-	// key in parent node.
+	// key of the node, would be node.keys[0].
 	key KeyType
 
 	// parent is pointer to parent node.
 	parent *node
 
-	// Note: node holds the same number of keys and values(or children)
-
 	// keys in this node.
+	// [child-0] key-0 | [child-1] key-1 | .. | [child-last] key-last
+	// So, key-i >= child-i.key
 	keys []KeyType
 
 	// values represent values, only for leaf node.
@@ -47,9 +48,6 @@ type node struct {
 
 	// childPgids holds children pgids.
 	childPgids []pgid
-
-	// childPtrs holds children pointers.
-	childPtrs []*node
 }
 
 // String returns string representation of node.
@@ -65,6 +63,11 @@ func (n *node) root() *node {
 	}
 
 	return r
+}
+
+// isRoot returns whether it is root node.
+func (n *node) isRoot() bool {
+	return n.parent == nil
 }
 
 // read initialize a node from page.
@@ -128,7 +131,7 @@ func (n *node) write(p *page) {
 	}
 }
 
-// search searches key in index, returns (found, first eq/larger index)
+// search searches key in index, returns (found, first equal-or-larger index)
 // when all indexes are smaller, returned index is len(index)
 func (n *node) search(key KeyType) (bool, int) {
 	i := sort.Search(len(n.keys), func(i int) bool {
@@ -142,19 +145,8 @@ func (n *node) search(key KeyType) (bool, int) {
 	return false, i
 }
 
-// insertKeyAt inserts key at given index.
-func (n *node) insertKeyAt(i int, key KeyType) {
-	if i > len(n.keys) {
-		panic("Index out of bound")
-	}
-
-	n.keys = append(n.keys, KeyType{})
-	copy(n.keys[i+1:], n.keys[i:])
-	n.keys[i] = key
-}
-
-// insertValueAt places value at given index.
-func (n *node) insertValueAt(i int, value ValueType) {
+// insertKeyValueAt inserts key/value pair into leaf node.
+func (n *node) insertKeyValueAt(i int, key KeyType, value ValueType) {
 	if !n.isLeaf {
 		panic("Leaf-only operation")
 	}
@@ -163,28 +155,32 @@ func (n *node) insertValueAt(i int, value ValueType) {
 		panic("Index out of bound")
 	}
 
+	n.keys = append(n.keys, KeyType{})
+	copy(n.keys[i+1:], n.keys[i:])
+	n.keys[i] = key
+
 	n.values = append(n.values, ValueType{})
 	copy(n.values[i+1:], n.values[i:])
 	n.values[i] = value
 }
 
-// insertChildAt inserts child at given index.
-func (n *node) insertChildAt(i int, child *node) {
+// insertKeyChildAt inserts key/pgid into internal node.
+func (n *node) insertKeyChildAt(i int, key KeyType, pid pgid) {
 	if n.isLeaf {
-		panic("Internal-node-only operation")
+		panic("Internal-only operation")
 	}
 
-	if i >= n.keyCount() {
+	if i > n.keyCount() {
 		panic("Index out of bound")
 	}
 
-	n.childPtrs = append(n.childPtrs, nil)
-	copy(n.childPtrs[i+1:], n.childPtrs[i:])
-	n.childPtrs[i] = child
+	n.keys = append(n.keys, KeyType{})
+	copy(n.keys[i+1:], n.keys[i:])
+	n.keys[i] = key
 
 	n.childPgids = append(n.childPgids, 0)
 	copy(n.childPgids[i+1:], n.childPgids[i:])
-	n.childPgids[i] = child.pgid
+	n.childPgids[i] = pid
 }
 
 func (n *node) getKeyAt(i int) KeyType {
@@ -195,22 +191,17 @@ func (n *node) getValueAt(i int) ValueType {
 	return n.values[i]
 }
 
-// removeKeyAt removes key at given index.
-func (n *node) removeKeyAt(i int) KeyType {
-	if i >= len(n.keys) {
-		panic("Key index out of bound")
+// getChildAt returns one child node.
+func (n *node) getChildAt(i int) *node {
+	if i < 0 || i >= n.keyCount() {
+		panic("Invalid child index")
 	}
 
-	removed := n.keys[i]
-
-	copy(n.keys[i:], n.keys[i+1:])
-	n.keys = n.keys[:len(n.keys)-1]
-
-	return removed
+	return n.tx.getNode(n.childPgids[i], n)
 }
 
-// removeValueAt removes value at given index.
-func (n *node) removeValueAt(i int) ValueType {
+// removeKeyValueAt removes key/value at given index.
+func (n *node) removeKeyValueAt(i int) (KeyType, ValueType) {
 	if !n.isLeaf {
 		panic("Leaf-only operation")
 	}
@@ -219,16 +210,20 @@ func (n *node) removeValueAt(i int) ValueType {
 		panic("Invalid index")
 	}
 
-	oldValue := n.values[i]
+	removedKey := n.keys[i]
+	removedValue := n.values[i]
+
+	copy(n.keys[i:], n.keys[i+1:])
+	n.keys = n.keys[:len(n.keys)-1]
 
 	copy(n.values[i:], n.values[i+1:])
 	n.values = n.values[:len(n.values)-1]
 
-	return oldValue
+	return removedKey, removedValue
 }
 
-// removeChildAt removes child at given index.
-func (n *node) removeChildAt(i int) {
+// removeKeyChildAt removes key/child at given index.
+func (n *node) removeKeyChildAt(i int) (KeyType, pgid) {
 	if n.isLeaf {
 		panic("Internal-node-only operation")
 	}
@@ -237,11 +232,16 @@ func (n *node) removeChildAt(i int) {
 		panic("Index out of bound")
 	}
 
+	removedKey := n.keys[i]
+	removedChild := n.childPgids[i]
+
+	copy(n.keys[i:], n.keys[i+1:])
+	n.keys = n.keys[:len(n.keys)-1]
+
 	copy(n.childPgids[i:], n.childPgids[i+1:])
 	n.childPgids = n.childPgids[:len(n.childPgids)-1]
 
-	copy(n.childPtrs[i:], n.childPtrs[i+1:])
-	n.childPtrs = n.childPtrs[:len(n.childPtrs)-1]
+	return removedKey, removedChild
 }
 
 // size returns page size after mmap
@@ -264,6 +264,7 @@ func (n *node) keyCount() int {
 }
 
 // split splits node into multiple siblings according to size and keys.
+// split sets parent for new node, but will not update new nodes to parent node.
 func (n *node) split() []*node {
 	nodes := []*node{}
 	node := n
@@ -285,6 +286,7 @@ func (n *node) split() []*node {
 // splitTwo splits node into two if:
 // 1. node map size > pageSize, and
 // 2. node has more than splitKeyCount
+// splitTwo will not update new node to parent node.
 func (n *node) splitTwo() *node {
 	if n.keyCount() <= splitKeyCount {
 		return nil
@@ -314,9 +316,11 @@ func (n *node) splitTwo() *node {
 		}
 	}
 
-	if n.parent == nil {
+	// Split root node
+	if n.isRoot() {
 		n.parent = &node{
-			childPtrs: []*node{n},
+			keys:       []KeyType{n.key},
+			childPgids: []pgid{n.pgid},
 		}
 	}
 
@@ -324,8 +328,6 @@ func (n *node) splitTwo() *node {
 		isLeaf: n.isLeaf,
 		parent: n.parent,
 	}
-
-	n.parent.childPtrs = append(n.parent.childPtrs, &next)
 
 	next.keys = n.keys[splitIndex:]
 	n.keys = n.keys[:splitIndex]
@@ -338,15 +340,15 @@ func (n *node) splitTwo() *node {
 	return &next
 }
 
-// spill recursively splits node and writes to memory pages(not to disk).
+// spill recursively splits node and writes to pages(not to disk).
 func (n *node) spill() bool {
 	if n.spilled {
 		return true
 	}
 
 	// Spill children first
-	for i := 0; i < len(n.childPtrs); i++ {
-		ok := n.childPtrs[i].spill()
+	for i := 0; i < n.keyCount(); i++ {
+		ok := n.getChildAt(i).spill()
 		if !ok {
 			return false
 		}
@@ -366,15 +368,20 @@ func (n *node) spill() bool {
 			return false
 		}
 
+		// Allocate page for new nodes
 		node.pgid = p.id
 
 		// Write to memory page
 		node.write(p)
-
 		node.spilled = true
 
 		if node.key == nil {
 			node.key = node.keys[0]
+		}
+
+		if !node.isRoot() {
+			_, i := node.parent.search(node.key)
+			node.parent.insertKeyChildAt(i, node.key, node.pgid)
 		}
 	}
 
@@ -389,27 +396,29 @@ func (n *node) tryMerge() {
 
 	n.balanced = true
 
-	if n.keyCount() < minKeyCount || n.mapSize() < int(float64(pageSize)*mergePagePercent) {
+	if n.keyCount() < minKeyCount {
 		return
 	}
 
-	// Root case
-	if n.parent == nil {
-		// Bring up the only child
-		if !n.isLeaf && len(n.keys) == 1 {
-			child := n.childPtrs[0]
+	if n.mapSize() < int(float64(pageSize)*mergePagePercent) {
+		return
+	}
+
+	// Root node, bring up the if have only one child
+	if n.isRoot() {
+		if !n.isLeaf && n.keyCount() == 1 {
+			child := n.getChildAt(0)
 
 			n.isLeaf = child.isLeaf
 
 			n.keys = child.keys[:]
 			n.values = child.values[:]
 
-			n.childPtrs = child.childPtrs[:]
 			n.childPgids = child.childPgids[:]
 
 			// Reparent grand children
-			for _, ch := range n.childPtrs {
-				ch.parent = n
+			for i := 0; i < n.keyCount(); i++ {
+				n.getChildAt(i).parent = n
 			}
 
 			child.free()
@@ -420,14 +429,10 @@ func (n *node) tryMerge() {
 
 	// Remove empty node
 	if n.keyCount() == 0 {
-		found, i := n.parent.search(n.key)
-		if !found {
-			panic("Key not found in parent")
-		}
+		// n.key could be different to parent index key
+		_, i := n.parent.search(n.key)
 
-		n.parent.removeKeyAt(i)
-		n.parent.removeChildAt(i)
-
+		n.parent.removeKeyChildAt(i)
 		n.free()
 
 		n.parent.tryMerge()
@@ -435,50 +440,53 @@ func (n *node) tryMerge() {
 		return
 	}
 
-	var from *node
-	var to *node
-	var mergeFromIdx int
-
-	if n == n.parent.childPtrs[0] {
-		// idx = 0, merge node[1] -> node[0]
-		mergeFromIdx = 1
-		from = n.parent.childPtrs[1]
-		to = n
-	} else {
-		// Merge to node[i-1]
-		_, i := n.parent.search(n.key)
-
-		mergeFromIdx = i
-		from = n
-		to = n.parent.childPtrs[i-1]
+	if n.parent.keyCount() < 2 {
+		panic("Parent should have at least one child")
 	}
 
-	// Check sibling
+	var from *node
+	var to *node
+	var fromIdx int
+
+	if n.pgid == n.parent.childPgids[0] {
+		// Merge node[i=0] <- node[1]
+		fromIdx = 1
+		from = n.parent.getChildAt(1)
+		to = n
+	} else {
+		// Merge node[i-1] <- node[i]
+		_, i := n.parent.search(n.key)
+
+		fromIdx = i
+		from = n
+		to = n.parent.getChildAt(i - 1)
+	}
+
+	// Check node type
 	if from.isLeaf != to.isLeaf {
 		panic("Sibling nodes should have same type")
 	}
 
-	// Move children, empty for leaf node.
-	for i, ch := range from.childPtrs {
-		ch.parent = to
-
-		to.childPgids = append(to.childPgids, from.childPgids[i])
-		to.childPtrs = append(to.childPtrs, ch)
-
-		from.removeChildAt(i)
+	for i := 0; i < from.keyCount(); i++ {
+		from.getChildAt(i).parent = to
 	}
 
 	to.keys = append(to.keys, from.keys...)
 	to.values = append(to.values, from.values...)
+	to.childPgids = append(to.childPgids, from.childPgids...)
 
-	n.parent.removeKeyAt(mergeFromIdx)
-	n.parent.removeChildAt(mergeFromIdx)
+	n.parent.removeKeyChildAt(fromIdx)
+
+	from.free()
 
 	n.parent.tryMerge()
 }
 
-// free returns page to freelist
+// free returns page to freelist.
 func (n *node) free() {
+	delete(n.tx.nodes, n.pgid)
+	delete(n.tx.pages, n.pgid)
+
 	if n.pgid != 0 {
 		n.tx.db.freelist.free(n.tx.id, n.tx.getPage(n.pgid))
 	}

@@ -62,8 +62,7 @@ func randomNode(keys int) (map[string]string, *node) {
 	for key, value := range kvs {
 		_, i := n.search([]byte(key))
 
-		n.insertKeyAt(i, []byte(key))
-		n.insertValueAt(i, []byte(value))
+		n.insertKeyValueAt(i, []byte(key), []byte(value))
 	}
 
 	return kvs, &n
@@ -81,8 +80,7 @@ func sizedNode(keys, keySize, valueSize int) *node {
 
 			found, j := n.search(key)
 			if !found {
-				n.insertKeyAt(j, key)
-				n.insertValueAt(j, value)
+				n.insertKeyValueAt(j, key, value)
 
 				break
 			}
