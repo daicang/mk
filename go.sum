@@ -1,4 +1,6 @@
 github.com/go-logr/logr v0.2.1 h1:fV3MLmabKIZ383XifUjFSwcoGee0v9qgPp8wy5svibE=
 github.com/go-logr/logr v0.2.1/go.mod h1:z6/tIYblkpsD+a4lm/fGIIU9mZ+XfAiaFtq7xTgseGU=
+github.com/go-logr/stdr v0.3.0 h1:GzFt/sOHlPMqsh46UTAaIDWPFq3DdNGcF4rwMjhTBVo=
+github.com/go-logr/stdr v0.3.0/go.mod h1:NO1vneyJDqKVgJYnxhwXWWmQPOvNM391IG3H8ql3jiA=
 github.com/google/gofuzz v1.2.0 h1:xRy4A+RhZaiKjJ1bPfwQ8sedCA+YS2YcCHW6ec7JMi0=
 github.com/google/gofuzz v1.2.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=

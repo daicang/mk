@@ -1,6 +1,7 @@
 package mk
 
 import (
+	"fmt"
 	"sort"
 	"unsafe"
 )
@@ -44,24 +45,32 @@ func NewWritableTx(db *DB) (*Tx, bool) {
 		return nil, false
 	}
 
-	rootPage := db.getPage(db.meta0.root)
+	rootPage := db.getPage(db.meta.root)
 	root := &node{
 		parent: nil,
 	}
+
+	fmt.Printf("rootid=%d\n", db.meta.root)
+
 	root.read(rootPage)
+
+	// TESTING
+	if !root.isLeaf {
+		panic("root should be leaf")
+	}
 
 	t := Tx{
 		db:       db,
 		id:       1,
 		writable: true,
-		meta:     db.meta0.copy(),
+		meta:     db.meta.copy(),
 		root:     root,
 		nodes:    map[pgid]*node{},
 		pages:    map[pgid]*page{},
 	}
 
-	t.nodes[db.meta0.root] = root
-	t.pages[db.meta0.root] = rootPage
+	t.nodes[db.meta.root] = root
+	t.pages[db.meta.root] = rootPage
 
 	db.txs = append(db.txs, &t)
 	db.writableTx = &t
@@ -71,7 +80,7 @@ func NewWritableTx(db *DB) (*Tx, bool) {
 
 // NewReadOnlyTx returns new read-only transaction.
 func NewReadOnlyTx(db *DB) (*Tx, bool) {
-	rootPage := db.getPage(db.meta0.root)
+	rootPage := db.getPage(db.meta.root)
 	root := &node{
 		parent: nil,
 	}
@@ -81,14 +90,14 @@ func NewReadOnlyTx(db *DB) (*Tx, bool) {
 		db:       db,
 		id:       1,
 		writable: false,
-		meta:     db.meta0.copy(),
+		meta:     db.meta.copy(),
 		root:     root,
 		nodes:    map[pgid]*node{},
 		pages:    map[pgid]*page{},
 	}
 
-	t.nodes[db.meta0.root] = root
-	t.pages[db.meta0.root] = rootPage
+	t.nodes[db.meta.root] = root
+	t.pages[db.meta.root] = rootPage
 
 	db.txs = append(db.txs, &t)
 

@@ -5,21 +5,26 @@ import (
 	"testing"
 )
 
-func TestInitDB(t *testing.T) {
-	dataPath := "./data"
+var (
+	dataPath = "../testing_data/data"
+)
 
+func TestCreateNew(t *testing.T) {
 	opt := Options{
 		ReadOnly: false,
 		Path:     dataPath,
 	}
 
-	db, ok := InitDB(opt)
-	if !ok {
-		t.Error("Failed to open DB")
+	os.Remove(dataPath)
+
+	db := DB{
+		path:     opt.Path,
+		readOnly: opt.ReadOnly,
 	}
 
-	if db.path != dataPath {
-		t.Errorf("DB path error: expect %s, get %s", dataPath, db.path)
+	ok := db.createNew()
+	if !ok {
+		t.Error("Failed to create new DB")
 	}
 
 	_, err := os.Stat(db.path)
@@ -27,13 +32,12 @@ func TestInitDB(t *testing.T) {
 		t.Errorf("Failed to check data file: %v", err)
 	}
 
-	buf := make([]byte, 4*pageSize)
-
+	buf := make([]byte, 3*pageSize)
 	fd, _ := os.OpenFile(db.path, os.O_CREATE, 0644)
 
 	fd.Read(buf)
 
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		p := bufferPage(buf, i)
 		if p.id != pgid(i) {
 			t.Errorf("Incorrect page id")
@@ -41,52 +45,63 @@ func TestInitDB(t *testing.T) {
 
 		switch i {
 		case 0:
-			fallthrough
+			if !p.isMeta() {
+				t.Error("First page should be meta page")
+			}
+
+			mt := p.toMeta()
+
+			if mt.magic != Magic {
+				t.Errorf("Meta page magic value error")
+			}
+
+			if mt.root != 2 {
+				t.Errorf("Meta page root pgid error")
+			}
+
 		case 1:
-			if p.toMeta().magic != Magic {
-				t.Errorf("File magic not match")
+			if !p.isFreelist() {
+				t.Errorf("Second page should be freelist page")
 			}
 
 		case 2:
-			if !p.isFreelist() {
-				t.Errorf("Incorrect freelist page type")
-			}
-		case 3:
 			if !p.isLeaf() {
-				t.Errorf("Incorrect leaf page type")
+				t.Errorf("Root page should be leaf")
 			}
 		}
 	}
 }
 
-// func TestDB(t *testing.T) {
-// 	opt := Options{
-// 		ReadOnly: false,
-// 		Path:     dataPath,
-// 	}
+func TestDB(t *testing.T) {
+	opt := Options{
+		ReadOnly: false,
+		Path:     dataPath,
+	}
 
-// 	db, ok := InitDB(opt)
-// 	if !ok {
-// 		t.Fatal("Failed to open DB")
-// 	}
+	os.Remove(dataPath)
 
-// 	tx, ok := NewWritableTx(db)
-// 	if !ok {
-// 		t.Fatal("Failed to create tx")
-// 	}
+	db, ok := OpenDB(opt)
+	if !ok {
+		t.Fatal("Failed to open DB")
+	}
 
-// 	kvs := randomKV(1000)
+	tx, ok := NewWritableTx(db)
+	if !ok {
+		t.Fatal("Failed to create tx")
+	}
 
-// 	for key, value := range kvs {
-// 		found, old := tx.Set([]byte(key), []byte(value))
-// 		if found {
-// 			t.Errorf("Found should be false: old=%s", old)
-// 		}
-// 	}
+	kvs := randomKV(1000)
 
-// 	ok = tx.Commit()
-// 	if !ok {
-// 		t.Errorf("Failed to commit")
-// 	}
+	for key, value := range kvs {
+		found, old := tx.Set([]byte(key), []byte(value))
+		if found {
+			t.Errorf("Found should be false: old=%s", old)
+		}
+	}
 
-// }
+	ok = tx.Commit()
+	if !ok {
+		t.Errorf("Failed to commit")
+	}
+
+}

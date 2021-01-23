@@ -15,11 +15,8 @@ type DB struct {
 	// Readonly mark
 	readOnly bool
 
-	// First meta block
-	meta0 *Meta
-
-	// Second meta block
-	meta1 *Meta
+	// Meta block
+	meta *Meta
 
 	// Memory map file pointer
 	file *os.File
@@ -54,20 +51,21 @@ type Meta struct {
 	// root page id
 	root pgid
 
-	// pageCount indicates pgid of next new page
-	pageCount pgid
+	// totalPages is number of allocated pages,
+	// also be pgid of next new page.
+	totalPages pgid
 }
 
 func (m *Meta) copy() *Meta {
 	return &Meta{
-		magic:     m.magic,
-		root:      m.root,
-		pageCount: m.pageCount,
+		magic:      m.magic,
+		root:       m.root,
+		totalPages: m.totalPages,
 	}
 }
 
-// InitDB initiates DB with given options.
-func InitDB(opts Options) (*DB, bool) {
+// OpenDB returns (DB, succeed)
+func OpenDB(opts Options) (*DB, bool) {
 	db := DB{
 		path:     opts.Path,
 		readOnly: opts.ReadOnly,
@@ -118,30 +116,38 @@ func (db *DB) createNew() bool {
 
 	buf := make([]byte, 4*pageSize)
 
-	// First 2 pages are meta
-	for i := 0; i < 2; i++ {
-		p := bufferPage(buf, i)
+	// First page is meta page
+	p := bufferPage(buf, 0)
 
-		p.SetPgid(pgid(i))
-		p.SetFlag(metaPageFlag)
-		p.overflow = 0
+	p.SetPgid(0)
+	p.SetFlag(metaPageFlag)
+	p.overflow = 0
 
-		m := p.toMeta()
+	m := p.toMeta()
 
-		m.magic = Magic
-	}
+	m.magic = Magic
 
-	// Third page is empty freelist page
-	p := bufferPage(buf, 2)
+	// The third page is root page
+	m.root = 2
 
-	p.SetPgid(2)
+	// Newly initialized DB has 3 pages
+	m.totalPages = 3
+
+	// Second page is empty freelist page
+	p = bufferPage(buf, 1)
+
+	p.SetPgid(1)
 	p.SetFlag(freelistPageFlag)
 
-	// Fourth page is empty leaf page
-	p = bufferPage(buf, 3)
+	// Third page is empty leaf page
+	p = bufferPage(buf, 2)
 
-	p.SetPgid(3)
+	p.SetPgid(2)
 	p.SetFlag(leafPageFlag)
+
+	if !p.isLeaf() {
+		panic("Root page should be leaf")
+	}
 
 	// Write buf to db file
 	_, err = db.file.WriteAt(buf, 0)
@@ -172,7 +178,7 @@ func (db *DB) load() bool {
 		return false
 	}
 
-	buf := make([]byte, pageSize*4)
+	buf := make([]byte, pageSize*3)
 
 	_, err = db.file.Read(buf)
 	if err != nil {
@@ -181,9 +187,9 @@ func (db *DB) load() bool {
 		return false
 	}
 
-	meta0 := bufferPage(buf, 0).toMeta()
+	mt := bufferPage(buf, 0).toMeta()
 
-	if meta0.magic != Magic {
+	if mt.magic != Magic {
 		log.Info("File magic not match")
 
 		return false
@@ -192,9 +198,9 @@ func (db *DB) load() bool {
 	return true
 }
 
-// allocate allocates contiguous pages from freelist,
-// when freelist is empty, call mmap() to extend memory mapping
+// allocate allocates contiguous pages.
 func (db *DB) allocate(count int) (*page, bool) {
+	// The memory to hold new page
 	var buf []byte
 
 	if count == 1 {
@@ -206,7 +212,7 @@ func (db *DB) allocate(count int) (*page, bool) {
 	p := (*page)(unsafe.Pointer(&buf[0]))
 	p.overflow = count - 1
 
-	// Check free page id from freelist first
+	// Check freelist for "hole" in mmap file to save the newly allocated pages
 	id, err := db.freelist.allocate(count)
 	if err == nil {
 		p.id = id
@@ -214,19 +220,19 @@ func (db *DB) allocate(count int) (*page, bool) {
 		return p, true
 	}
 
-	// TODO: why add 1?
-	p.SetPgid(db.writableTx.meta.pageCount)
-	newSize := (int(p.id) + count + 1) * pageSize
+	// When no proper "hole", we need to enlarge memory mapping
+	p.SetPgid(db.writableTx.meta.totalPages)
+
+	db.writableTx.meta.totalPages += pgid(count)
+	mmapSize := int(db.writableTx.meta.totalPages * pgid(pageSize))
 
 	// Resize mmap if exceed
-	if newSize > db.mmapSize {
-		ok := db.doMmap(newSize)
+	if mmapSize > db.mmapSize {
+		ok := db.doMmap(mmapSize)
 		if !ok {
 			return nil, false
 		}
 	}
-
-	db.writableTx.meta.pageCount += pgid(count)
 
 	return p, true
 }
@@ -287,8 +293,7 @@ func (db *DB) doMmap(requiredSize int) bool {
 	db.mmSizedBuf = (*[maxMmapSize]byte)(unsafe.Pointer(&buf))
 	db.mmapSize = requiredSize
 
-	db.meta0 = bufferPage(*db.mmBuf, 0).toMeta()
-	db.meta1 = bufferPage(*db.mmBuf, 1).toMeta()
+	db.meta = bufferPage(*db.mmBuf, 0).toMeta()
 
 	return true
 }

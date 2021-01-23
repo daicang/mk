@@ -194,7 +194,7 @@ func (n *node) getValueAt(i int) ValueType {
 // getChildAt returns one child node.
 func (n *node) getChildAt(i int) *node {
 	if i < 0 || i >= n.keyCount() {
-		panic("Invalid child index")
+		panic(fmt.Sprintf("Invalid child index: %d out of %d", i, n.keyCount()))
 	}
 
 	return n.tx.getNode(n.childPgids[i], n)
