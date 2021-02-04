@@ -1,59 +1,66 @@
-package mk
+package db
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"github.com/daicang/mk/pkg/freelist"
+	"github.com/daicang/mk/pkg/page"
 )
+
+const (
+	// DB file magic
+	Magic = 0xDCDB2020
+)
+
+const (
+	// Memory map grows by 1GB.
+	MmapStep = 1 << 30
+)
+
+// Options holds info to start DB.
+type Options struct {
+	// DB mmap file path
+	Path string
+}
 
 // DB represents one database.
 type DB struct {
 	// Path to memory mapping file
 	path string
-
-	// Readonly mark
-	readOnly bool
-
 	// Meta block
 	meta *Meta
-
 	// Memory map file pointer
 	file *os.File
-
 	// pointer to memory map array, without size limit
 	mmBuf *[]byte
-
 	// pointer to memory map array, with size limit
-	mmSizedBuf *[maxMmapSize]byte
-
+	mmSizedBuf *[MmapMaxSize]byte
 	// All current transaction
 	txs []*Tx
-
 	// There can only be one writable transaction
 	writableTx *Tx
-
 	// mmapSize is the mmaped file size
 	mmapSize int
-
-	// pagePool stores single page byte array
-	pagePool sync.Pool
-
-	// freelist keeps freed pages
-	freelist *pager
+	// single page pool
+	singlePages sync.Pool
+	// mmap empty page slots
+	freelist *freelist.Freelist
 }
 
 // Meta holds database metadata.
 type Meta struct {
 	// magic should be mkMagic
 	magic uint32
-
+	// freelist page id
+	freelistPage uint32
 	// root page id
-	root pgid
-
-	// totalPages is number of allocated pages,
-	// also be pgid of next new page.
-	totalPages pgid
+	rootPage uint32
+	// number of allocated pages, also id of next new page
+	totalPages uint32
 }
 
 func (m *Meta) copy() *Meta {
@@ -64,19 +71,26 @@ func (m *Meta) copy() *Meta {
 	}
 }
 
+// pageMeta retrieves meta struct from page.
+func pageMeta(p *page.Page) *Meta {
+	if !p.IsMeta() {
+		panic("Calling getMeta with non-meta page")
+	}
+
+	return (*Meta)(unsafe.Pointer(&p.Data))
+}
+
 // OpenDB returns (DB, succeed)
 func OpenDB(opts Options) (*DB, bool) {
 	db := DB{
 		path:     opts.Path,
-		readOnly: opts.ReadOnly,
 	}
 
 	_, err := os.Stat(db.path)
-
 	if os.IsNotExist(err) {
 		ok := db.createNew()
 		if !ok {
-			log.Info("Failed to create new DB")
+			fmt.Println("Failed to create new DB")
 
 			return nil, false
 		}
@@ -84,21 +98,21 @@ func OpenDB(opts Options) (*DB, bool) {
 
 	ok := db.load()
 	if !ok {
-		log.Info("Failed to load DB")
-
+		fmt.Println("Failed to load DB")
 		return nil, false
 	}
 
-	db.pagePool = sync.Pool{New: func() interface{} {
-		return make([]byte, pageSize)
-	}}
+	db.singlePages = sync.Pool{
+		New: func() interface{} {return make([]byte, page.PageSize)},
+	}
 
-	ok = db.doMmap(minMmapSize)
+	ok = db.doMmap(MmapMinSize)
 	if !ok {
 		return nil, false
 	}
 
 	// TODO: init freelist
+
 
 	return &db, true
 }
@@ -106,60 +120,49 @@ func OpenDB(opts Options) (*DB, bool) {
 // createNew creates file and a new DB.
 func (db *DB) createNew() bool {
 	var err error
-
 	db.file, err = os.Create(db.path)
 	if err != nil {
-		log.Error(err, "Failed to create new DB file")
+		fmt.Printf("Failed to create new DB file: %v\n", err)
 
 		return false
 	}
 
-	buf := make([]byte, 4*pageSize)
+	buf := make([]byte, 3*page.PageSize)
+	p := page.FromBuffer(buf, 0)
 
 	// First page is meta page
-	p := bufferPage(buf, 0)
-
 	p.SetPgid(0)
-	p.SetFlag(metaPageFlag)
-	p.overflow = 0
+	p.SetFlag(page.FlagMeta)
+	p.Overflow = 0
 
-	m := p.toMeta()
-
-	m.magic = Magic
-
+	mt := pageMeta(p)
+	mt.magic = Magic
 	// The third page is root page
-	m.root = 2
-
-	// Newly initialized DB has 3 pages
-	m.totalPages = 3
+	mt.root = 2
+	// New DB has 3 pages
+	mt.totalPages = 3
 
 	// Second page is empty freelist page
-	p = bufferPage(buf, 1)
-
+	p = page.FromBuffer(buf, 1)
 	p.SetPgid(1)
-	p.SetFlag(freelistPageFlag)
+	p.SetFlag(page.FlagFreelist)
 
 	// Third page is empty leaf page
-	p = bufferPage(buf, 2)
-
+	p = page.FromBuffer(buf, 2)
 	p.SetPgid(2)
-	p.SetFlag(leafPageFlag)
-
-	if !p.isLeaf() {
-		panic("Root page should be leaf")
-	}
+	p.SetFlag(page.FlagLeaf)
 
 	// Write buf to db file
 	_, err = db.file.WriteAt(buf, 0)
 	if err != nil {
-		log.Error(err, "Failed to write new DB file")
+		fmt.Printf("Failed to write new DB file: %v\n", err)
 
 		return false
 	}
 
 	err = db.file.Sync()
 	if err != nil {
-		log.Error(err, "Failed to sync new DB file")
+		fmt.Printf("Failed to sync new DB file: %v\n", err)
 
 		return false
 	}
@@ -173,24 +176,22 @@ func (db *DB) load() bool {
 
 	db.file, err = os.OpenFile(db.path, os.O_CREATE, 0644)
 	if err != nil {
-		log.Error(err, "Failed to open DB file")
+		fmt.Printf("Failed to open DB file: %v\n", err)
 
 		return false
 	}
 
-	buf := make([]byte, pageSize*3)
-
+	buf := make([]byte, page.PageSize*3)
 	_, err = db.file.Read(buf)
 	if err != nil {
-		log.Error(err, "Failed to read DB file")
+		fmt.Printf("Failed to read DB file: %v\n", err)
 
 		return false
 	}
 
-	mt := bufferPage(buf, 0).toMeta()
-
+	mt := pageMeta(page.FromBuffer(buf, 0))
 	if mt.magic != Magic {
-		log.Info("File magic not match")
+		fmt.Println("File magic not match")
 
 		return false
 	}
@@ -198,30 +199,29 @@ func (db *DB) load() bool {
 	return true
 }
 
-// allocate allocates contiguous pages.
-func (db *DB) allocate(count int) (*page, bool) {
-	// The memory to hold new page
+// allocate allocates contiguous pages, returns (*page, succeed).
+func (db *DB) allocate(count int) (*page.Page, bool) {
+	// Allocate memory from pool/heap to hold new page
 	var buf []byte
-
 	if count == 1 {
 		buf = db.pagePool.Get().([]byte)
 	} else {
-		buf = make([]byte, count*pageSize)
+		buf = make([]byte, count*page.PageSize)
 	}
 
-	p := (*page)(unsafe.Pointer(&buf[0]))
-	p.overflow = count - 1
+	p := page.FromBuffer(buf, 0)
+	p.Overflow = count - 1
 
 	// Check freelist for "hole" in mmap file to save the newly allocated pages
 	id, err := db.freelist.allocate(count)
 	if err == nil {
-		p.id = id
+		p.SetID(id)
 
 		return p, true
 	}
 
 	// When no proper "hole", we need to enlarge memory mapping
-	p.SetPgid(db.writableTx.meta.totalPages)
+	p.SetPgid(db.writableTx.meta.)
 
 	db.writableTx.meta.totalPages += pgid(count)
 	mmapSize := int(db.writableTx.meta.totalPages * pgid(pageSize))
@@ -256,7 +256,7 @@ func roundMmapSize(size int) int {
 	size -= size % mmapStep
 
 	if size > maxMmapSize {
-		log.Info("Exceed max mmap size, round up")
+		Log.Info("Exceed max mmap size, round up")
 
 		size = maxMmapSize
 	}
@@ -268,7 +268,7 @@ func roundMmapSize(size int) int {
 func (db *DB) doMmap(requiredSize int) bool {
 	fInfo, err := db.file.Stat()
 	if err != nil {
-		log.Error(err, "Failed to stat mmap file")
+		Log.Error(err, "Failed to stat mmap file")
 
 		return false
 	}
@@ -284,7 +284,7 @@ func (db *DB) doMmap(requiredSize int) bool {
 
 	buf, err := syscall.Mmap(int(db.file.Fd()), 0, requiredSize, syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
-		log.Error(err, "mmap failed")
+		Log.Error(err, "mmap failed")
 
 		return false
 	}
@@ -293,7 +293,7 @@ func (db *DB) doMmap(requiredSize int) bool {
 	db.mmSizedBuf = (*[maxMmapSize]byte)(unsafe.Pointer(&buf))
 	db.mmapSize = requiredSize
 
-	db.meta = bufferPage(*db.mmBuf, 0).toMeta()
+	db.meta = bufferPage(*db.mmBuf, 0).getMeta()
 
 	return true
 }

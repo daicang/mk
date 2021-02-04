@@ -1,4 +1,4 @@
-package mk
+package tree
 
 import (
 	"testing"

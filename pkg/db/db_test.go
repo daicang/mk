@@ -1,4 +1,4 @@
-package mk
+package db
 
 import (
 	"os"
@@ -49,7 +49,7 @@ func TestCreateNew(t *testing.T) {
 				t.Error("First page should be meta page")
 			}
 
-			mt := p.toMeta()
+			mt := p.getMeta()
 
 			if mt.magic != Magic {
 				t.Errorf("Meta page magic value error")
@@ -72,36 +72,36 @@ func TestCreateNew(t *testing.T) {
 	}
 }
 
-func TestDB(t *testing.T) {
-	opt := Options{
-		ReadOnly: false,
-		Path:     dataPath,
-	}
+// func TestDB(t *testing.T) {
+// 	opt := Options{
+// 		ReadOnly: false,
+// 		Path:     dataPath,
+// 	}
 
-	os.Remove(dataPath)
+// 	os.Remove(dataPath)
 
-	db, ok := OpenDB(opt)
-	if !ok {
-		t.Fatal("Failed to open DB")
-	}
+// 	db, ok := OpenDB(opt)
+// 	if !ok {
+// 		t.Fatal("Failed to open DB")
+// 	}
 
-	tx, ok := NewWritableTx(db)
-	if !ok {
-		t.Fatal("Failed to create tx")
-	}
+// 	tx, ok := NewWritableTx(db)
+// 	if !ok {
+// 		t.Fatal("Failed to create tx")
+// 	}
 
-	kvs := randomKV(1000)
+// 	kvs := randomKV(1000)
 
-	for key, value := range kvs {
-		found, old := tx.Set([]byte(key), []byte(value))
-		if found {
-			t.Errorf("Found should be false: old=%s", old)
-		}
-	}
+// 	for key, value := range kvs {
+// 		found, old := tx.Set([]byte(key), []byte(value))
+// 		if found {
+// 			t.Errorf("Found should be false: old=%s", old)
+// 		}
+// 	}
 
-	ok = tx.Commit()
-	if !ok {
-		t.Errorf("Failed to commit")
-	}
+// 	ok = tx.Commit()
+// 	if !ok {
+// 		t.Errorf("Failed to commit")
+// 	}
 
-}
+// }
