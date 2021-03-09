@@ -53,11 +53,11 @@ linters:
     - staticcheck
     - structcheck
     - stylecheck
-    - testpackage
+    # - testpackage
     - typecheck
     - unconvert
     - unparam
     - unused
     - varcheck
     - whitespace
-    - wsl
+    # - wsl
