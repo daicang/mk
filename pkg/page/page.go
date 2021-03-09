@@ -37,16 +37,16 @@ var (
 // internal page: page struct | data | key | key | ..
 // leaf     page: page struct | data | key | value | key | ..
 type Page struct {
-	// index at mmap file
-	Index common.Pgid
 	// overflow counter, 0 for single page
 	Overflow int
 	// key/freeslot count
 	Count int
-	// type mark
-	Flags uint16
 	// starting addr of data.
 	Data uintptr
+	// index at mmap file
+	Index common.Pgid
+	// type mark
+	Flags uint16
 }
 
 // pairInfo stores metadata for:
@@ -132,7 +132,6 @@ func (p *Page) getPairInfo(i int) *pairInfo {
 
 func (p *Page) SetPairInfo(i int, ks, vs uint32, cid common.Pgid, offset uint32) {
 	pi := p.getPairInfo(i)
-
 	pi.offset = offset
 	pi.keySize = ks
 
@@ -143,18 +142,20 @@ func (p *Page) SetPairInfo(i int, ks, vs uint32, cid common.Pgid, offset uint32)
 	}
 }
 
+// GetKeyAt returns key with given index.
+// note: the key is in mmap buffer, not heap
 func (p *Page) GetKeyAt(i int) kv.Key {
 	pair := p.getPairInfo(i)
 	buf := (*[maxPairs]byte)(unsafe.Pointer(&p.Data))[pair.offset:]
-
 	return buf[:pair.keySize]
 }
 
+// GetValueAt returns value with given index.
+// note: the value is in mmap buffer, not heap
 func (p *Page) GetValueAt(i int) kv.Value {
 	if p.IsInternal() {
 		panic("error: get value at internal page")
 	}
-
 	pair := p.getPairInfo(i)
 	valueOffset := pair.offset + pair.keySize
 	buf := (*[maxPairs]byte)(unsafe.Pointer(&p.Data))[valueOffset:]
@@ -172,6 +173,6 @@ func (p *Page) GetChildPgid(i int) common.Pgid {
 // FromBuffer returns page with given index in a buffer.
 // Go slices are metadata to underlying structure, but
 // arrays are values. So never pass arrays.
-func FromBuffer(buf []byte, i int) *Page {
-	return (*Page)(unsafe.Pointer(&buf[i*PageSize]))
+func FromBuffer(buf []byte, i common.Pgid) *Page {
+	return (*Page)(unsafe.Pointer(&buf[i*common.Pgid(PageSize)]))
 }

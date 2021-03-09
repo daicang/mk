@@ -32,21 +32,17 @@ type Tx struct {
 func NewWritableTx(db *DB) (*Tx, bool) {
 	if db.writableTx != nil {
 		fmt.Println("Cannot create multiple writable tx")
-
 		return nil, false
 	}
-
 	rootPage := db.getPage(db.meta.rootPage)
 	root := &tree.Node{
 		Parent: nil,
 	}
 
 	fmt.Printf("rootid=%d\n", db.meta.rootPage)
-
 	fmt.Printf("Page: %s\n", rootPage)
 
 	root.ReadPage(rootPage)
-
 	fmt.Printf("Node: %s\n", root)
 
 	// TESTING
@@ -54,7 +50,7 @@ func NewWritableTx(db *DB) (*Tx, bool) {
 		panic("root should be leaf")
 	}
 
-	t := Tx{
+	tx := Tx{
 		db:       db,
 		id:       1,
 		writable: true,
@@ -64,13 +60,13 @@ func NewWritableTx(db *DB) (*Tx, bool) {
 		pages:    map[common.Pgid]*page.Page{},
 	}
 
-	t.nodes[db.meta.rootPage] = root
-	t.pages[db.meta.rootPage] = rootPage
+	tx.nodes[db.meta.rootPage] = root
+	tx.pages[db.meta.rootPage] = rootPage
 
-	db.txs = append(db.txs, &t)
-	db.writableTx = &t
+	db.txs = append(db.txs, &tx)
+	db.writableTx = &tx
 
-	return &t, true
+	return &tx, true
 }
 
 // NewReadOnlyTx returns new read-only transaction.
@@ -81,7 +77,7 @@ func NewReadOnlyTx(db *DB) (*Tx, bool) {
 	}
 	root.ReadPage(rootPage)
 
-	t := Tx{
+	tx := Tx{
 		db:       db,
 		id:       1,
 		writable: false,
@@ -91,24 +87,22 @@ func NewReadOnlyTx(db *DB) (*Tx, bool) {
 		pages:    map[common.Pgid]*page.Page{},
 	}
 
-	t.nodes[db.meta.rootPage] = root
-	t.pages[db.meta.rootPage] = rootPage
-	db.txs = append(db.txs, &t)
+	tx.nodes[db.meta.rootPage] = root
+	tx.pages[db.meta.rootPage] = rootPage
+	db.txs = append(db.txs, &tx)
 
-	return &t, true
+	return &tx, true
 }
 
 // allocate returns contiguous pages.
-func (t *Tx) allocate(count int) (*page.Page, bool) {
-	if !t.writable {
+func (tx *Tx) allocate(count int) (*page.Page, bool) {
+	if !tx.writable {
 		panic("Read only tx can't allocate")
 	}
-	return t.db.allocate(count)
+	return tx.db.allocate(count)
 }
 
-func (t *Tx) close() {
-
-}
+func (tx *Tx) close() {}
 
 // Commit balance b+tree, write changes to disk, and close transaction.
 func (tx *Tx) Commit() bool {
@@ -144,9 +138,9 @@ func (tx *Tx) Commit() bool {
 }
 
 // write writes all pages hold by this transaction.
-func (t *Tx) write() bool {
+func (tx *Tx) write() bool {
 	pages := page.Pages{}
-	for _, p := range t.pages {
+	for _, p := range tx.pages {
 		pages = append(pages, p)
 	}
 	sort.Sort(pages)
@@ -156,7 +150,7 @@ func (t *Tx) write() bool {
 		pos := int64(p.Index) * int64(page.PageSize)
 		size := (p.Overflow + 1) * page.PageSize
 		buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(p))
-		_, err := t.db.file.WriteAt(buf[:size], pos)
+		_, err := tx.db.file.WriteAt(buf[:size], pos)
 		if err != nil {
 			fmt.Printf("Failed to write page: %v\n", err)
 			return false
@@ -170,7 +164,7 @@ func (t *Tx) write() bool {
 			for i := range buf {
 				buf[i] = 0
 			}
-			t.db.singlePages.Put(buf)
+			tx.db.singlePages.Put(buf) // nolint: staticcheck
 		}
 	}
 
@@ -178,48 +172,48 @@ func (t *Tx) write() bool {
 }
 
 // TODO:
-func (t *Tx) rollback() {
+func (tx *Tx) rollback() {
 	// delete()
 }
 
 // getPage returns page from pgid.
-func (t *Tx) getPage(id common.Pgid) *page.Page {
+func (tx *Tx) getPage(id common.Pgid) *page.Page {
 	// Check page buffer first
-	p, exist := t.pages[id]
+	p, exist := tx.pages[id]
 	if exist {
 		return p
 	}
 	// If not found, return page from memory map
-	p = t.db.getPage(id)
-	t.pages[id] = p
+	p = tx.db.getPage(id)
+	tx.pages[id] = p
 
 	return p
 }
 
 // getNode returns node from pgid.
-func (t *Tx) getNode(id common.Pgid, parent *tree.Node) *tree.Node {
-	n, exist := t.nodes[id]
+func (tx *Tx) getNode(id common.Pgid, parent *tree.Node) *tree.Node {
+	n, exist := tx.nodes[id]
 	if exist {
 		return n
 	}
 
-	p := t.getPage(id)
+	p := tx.getPage(id)
 	n = &tree.Node{
 		Parent: parent,
 	}
 
 	n.ReadPage(p)
-	t.nodes[id] = n
+	tx.nodes[id] = n
 
 	return n
 }
 
 // Get searches given key, returns (found, value)
-func (t *Tx) Get(key kv.Key) (bool, kv.Value) {
-	curr := t.root
+func (tx *Tx) Get(key kv.Key) (bool, kv.Value) {
+	curr := tx.root
 	for !curr.IsLeaf {
 		_, i := curr.Search(key)
-		curr = t.getChildAt(curr, i)
+		curr = tx.getChildAt(curr, i)
 	}
 	found, i := curr.Search(key)
 	if found {
@@ -229,12 +223,12 @@ func (t *Tx) Get(key kv.Key) (bool, kv.Value) {
 }
 
 // Set sets key with value, returns (found, oldValue)
-func (t *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
-	if !t.writable {
+func (tx *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
+	if !tx.writable {
 		panic("Readonly transaction")
 	}
 
-	curr := t.root
+	curr := tx.root
 	for {
 		found, i := curr.Search(key)
 
@@ -250,17 +244,17 @@ func (t *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
 			return false, kv.Value{}
 		}
 
-		curr = t.getChildAt(curr, i)
+		curr = tx.getChildAt(curr, i)
 	}
 }
 
 // Remove removes given key from node recursively, returns (found, oldValue).
-func (t *Tx) Remove(key kv.Key) (bool, kv.Value) {
-	if !t.writable {
+func (tx *Tx) Remove(key kv.Key) (bool, kv.Value) {
+	if !tx.writable {
 		panic("Readonly transaction")
 	}
 
-	curr := t.root
+	curr := tx.root
 
 	for {
 		found, i := curr.Search(key)
@@ -276,7 +270,7 @@ func (t *Tx) Remove(key kv.Key) (bool, kv.Value) {
 			return true, value
 		}
 
-		curr = t.getChildAt(curr, i)
+		curr = tx.getChildAt(curr, i)
 	}
 }
 
@@ -351,9 +345,9 @@ func (tx *Tx) merge(n *tree.Node) {
 			child := tx.getChildAt(n, 0)
 
 			n.IsLeaf = child.IsLeaf
-			n.Keys = child.Keys[:]
-			n.Values = child.Values[:]
-			n.Cids = child.Cids[:]
+			n.Keys = child.Keys
+			n.Values = child.Values
+			n.Cids = child.Cids
 			// Reparent grand children
 			for i := 0; i < n.KeyCount(); i++ {
 				tx.getChildAt(n, i).Parent = n
@@ -413,7 +407,7 @@ func (tx *Tx) merge(n *tree.Node) {
 	tx.merge(n.Parent)
 }
 
-// freeNode returns page to freelist.
+// freeNode returns page to freelistx.
 func (tx *Tx) freeNode(n *tree.Node) {
 	delete(tx.nodes, n.Index)
 	delete(tx.pages, n.Index)

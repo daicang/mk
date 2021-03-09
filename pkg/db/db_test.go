@@ -21,7 +21,7 @@ func TestCreateNew(t *testing.T) {
 		path: opt.Path,
 	}
 
-	ok := db.createNew()
+	ok := db.initFile()
 	if !ok {
 		t.Error("Failed to create new DB")
 	}
@@ -37,7 +37,7 @@ func TestCreateNew(t *testing.T) {
 	fd.Read(buf)
 
 	for i := 0; i < 3; i++ {
-		p := page.FromBuffer(buf, i)
+		p := page.FromBuffer(buf, common.Pgid(i))
 		if p.Index != common.Pgid(i) {
 			t.Errorf("Incorrect page id")
 		}
@@ -76,7 +76,7 @@ func TestCreateNew(t *testing.T) {
 
 // 	os.Remove(dataPath)
 
-// 	db, ok := OpenDB(opt)
+// 	db, ok := Open(opt)
 // 	if !ok {
 // 		t.Fatal("Failed to open DB")
 // 	}

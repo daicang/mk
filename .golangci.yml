@@ -1,9 +1,9 @@
 run:
   timeout: 5m
-  # skip-dirs:
-    # - pkg/generated
-  # skip-files:
-    # - pkg/apis/
+  skip-dirs:
+    - tmp
+  skip-files:
+    - pkg/db/db_test.go
 
 linters-settings:
   maligned:
@@ -27,13 +27,13 @@ linters:
     - goconst
     - gocritic
     - gocyclo
-    - godot
-    - godox
+    # - godot
+    # - godox
     - goerr113
     - gofmt
     - goimports
     - golint
-    - gomnd
+    # - gomnd
     - gomodguard
     - goprintffuncname
     - gosec

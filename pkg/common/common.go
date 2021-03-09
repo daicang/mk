@@ -13,7 +13,7 @@ const (
 
 const (
 	// Maximum key size is 1MB.
-	maxKeySize = 1 << 20
+	maxKeySize = 1 << 20 // nolint
 	// Maximum value size is 1GB.
-	maxValueSize = 1 << 30
+	maxValueSize = 1 << 30 // nolint
 )

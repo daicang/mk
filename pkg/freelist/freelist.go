@@ -121,7 +121,7 @@ func (f *Freelist) ReadPage(p *page.Page) {
 		panic("page type mismatch")
 	}
 	buf := (*[maxFreeSlot]common.Pgid)(unsafe.Pointer(&p.Data))
-	for i := 0; i < int(p.Count); i++ {
+	for i := 0; i < p.Count; i++ {
 		f.ids = append(f.ids, buf[i])
 	}
 }

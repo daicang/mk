@@ -35,6 +35,6 @@ func RandomKV(size int) map[string]string {
 
 func RandomByteArray(size int) []byte {
 	arr := make([]byte, size)
-	rand.Read(arr)
+	_, _ = rand.Read(arr)
 	return arr
 }
