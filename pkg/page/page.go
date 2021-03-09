@@ -7,7 +7,6 @@ import (
 
 	"github.com/daicang/mk/pkg/common"
 	"github.com/daicang/mk/pkg/kv"
-	"github.com/rkt/rkt/tools/common"
 )
 
 const (
@@ -65,17 +64,17 @@ type pairInfo struct {
 	childID common.Pgid
 }
 
-type pages []*Page
+type Pages []*Page
 
-func (pgs pages) Len() int {
+func (pgs Pages) Len() int {
 	return len(pgs)
 }
 
-func (pgs pages) Less(i, j int) bool {
+func (pgs Pages) Less(i, j int) bool {
 	return pgs[i].Index < pgs[j].Index
 }
 
-func (pgs pages) Swap(i, j int) {
+func (pgs Pages) Swap(i, j int) {
 	pgs[i], pgs[j] = pgs[j], pgs[i]
 }
 

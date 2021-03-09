@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/daicang/mk/pkg/common"
 	"github.com/daicang/mk/pkg/page"
 )
 
@@ -78,7 +79,7 @@ func TestReadWrite(t *testing.T) {
 	size := 200
 
 	for i := 0; i < size; i++ {
-		f.ids = append(f.ids, uint32(i))
+		f.ids = append(f.ids, common.Pgid(i))
 	}
 
 	buf := make([]byte, f.Size())

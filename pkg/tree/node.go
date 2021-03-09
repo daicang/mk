@@ -12,260 +12,265 @@ import (
 
 const (
 	// Minimal keys per node
-	minKeyCount = 2
+	minKeys = 2
 	// Maxium keys per node
-	maxKeyCount = 4
-	// splitPagePercent marks first split point.
+	maxKeys = 4
+)
+
+var (
 	splitPagePercent = 0.5
-	// mergePagePercent
-	mergePagePercent = 0.25
+	underfillPercent = 0.25
+
+	splitThreshold     = int(float64(page.PageSize) * splitPagePercent)
+	underfillThreshold = int(float64(page.PageSize) * underfillPercent)
 )
 
 // Node represents b+tree node for indexing.
 // node holds the same number of keys and values(or children).
 type Node struct {
-	// pgid is the id of mapped page.
-	pgid common.Pgid
+	// Index is page map index. Index=0 marks node as not mapped to page.
+	Index common.Pgid
 	// IsLeaf marks leaf nodes.
 	IsLeaf bool
-	// balanced node skips tryMerge.
-	balanced bool
-	// spilled node skips spill.
+	// Balanced node can skip merge.
+	Balanced bool
+	// Spilled node can skip spill.
 	Spilled bool
-	// key of the node, would be node.keys[0].
-	key kv.Key
+	// key of the node, would be node.Keys[0].
+	Key kv.Key
 	// Parent is pointer to Parent node.
 	Parent *Node
 	// keys in this node.
 	// [child-0] key-0 | [child-1] key-1 | .. | [child-last] key-last
 	// So, key-i >= child-i.key
-	keys []kv.Key
+	Keys []kv.Key
 	// values represent values, only for leaf node.
-	values []kv.Value
-	// childPgids holds children pgids.
-	childPgids []common.Pgid
+	Values []kv.Value
+	// cids holds children pgids.
+	Cids []common.Pgid
 }
 
 // String returns string representation of node.
 func (n *Node) String() string {
-	return fmt.Sprintf("node[%d] len=%d leaf=%t", n.pgid, len(n.keys), n.IsLeaf)
+	typ := "internal"
+	if n.IsLeaf {
+		typ = "leaf"
+	}
+	return fmt.Sprintf("node[%d] %s keys=%d", n.Index, typ, len(n.Keys))
 }
 
-// root returns root node from current node.
-func (n *Node) root() *Node {
+// Root returns root node from current node.
+func (n *Node) Root() *Node {
 	r := n
-	for !n.isRoot() {
+	for !n.IsRoot() {
 		r = r.Parent
 	}
 	return r
 }
 
-// isRoot returns whether it is root node.
-func (n *Node) isRoot() bool {
+// IsRoot returns whether it is root node.
+func (n *Node) IsRoot() bool {
 	return n.Parent == nil
 }
 
-// ReadPage initialize a node from page.
+// ReadPage initiate a node from page.
 func (n *Node) ReadPage(p *page.Page) {
-	n.pgid = p.Index
+	n.Index = p.Index
 	n.IsLeaf = p.IsLeaf()
 
 	for i := 0; i < p.Count; i++ {
-		n.keys = append(n.keys, p.GetKeyAt(i))
+		n.Keys = append(n.Keys, p.GetKeyAt(i))
 		if n.IsLeaf {
-			n.values = append(n.values, p.GetValueAt(i))
+			n.Values = append(n.Values, p.GetValueAt(i))
 		} else {
-			n.childPgids = append(n.childPgids, p.GetChildPgid(i))
+			n.Cids = append(n.Cids, p.GetChildPgid(i))
 		}
 	}
 
-	if len(n.keys) > 0 {
-		n.key = n.keys[0]
+	if len(n.Keys) > 0 {
+		n.Key = n.Keys[0]
 	}
 }
 
 // WritePage writes node to given page
 func (n *Node) WritePage(p *page.Page) {
-	p.Count = len(n.keys)
-
-	offset := uint32(len(n.keys) * page.PairInfoSize)
+	offset := uint32(len(n.Keys) * page.PairInfoSize)
 	buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(&p.Data))[offset:]
+	p.Count = len(n.Keys)
 
 	if n.IsLeaf {
 		p.SetFlag(page.FlagLeaf)
-
-		for i := 0; i < len(n.keys); i++ {
-			keySize := uint32(len(n.keys[i]))
-			valueSize := uint32(len(n.values[i]))
+		for i := 0; i < len(n.Keys); i++ {
+			keySize := uint32(len(n.Keys[i]))
+			valueSize := uint32(len(n.Values[i]))
 			p.SetPairInfo(i, keySize, valueSize, 0, offset)
 
-			copy(buf, n.keys[i])
+			copy(buf, n.Keys[i])
 			buf = buf[keySize:]
 
-			copy(buf, n.values[i])
+			copy(buf, n.Values[i])
 			buf = buf[valueSize:]
 
-			offset = offset + keySize + valueSize
+			offset += keySize + valueSize
 		}
 	} else {
 		p.SetFlag(page.FlagInternal)
-
-		for i := 0; i < len(n.keys); i++ {
-			keySize := uint32(len(n.keys[i]))
-
+		for i := 0; i < len(n.Keys); i++ {
+			keySize := uint32(len(n.Keys[i]))
 			p.SetPairInfo(i, keySize, 0, n.GetChildID(i), offset)
 
-			copy(buf, n.keys[i])
+			copy(buf, n.Keys[i])
 			buf = buf[keySize:]
 
-			offset = offset + keySize
+			offset += keySize
 		}
 	}
 }
 
-// search searches key in index, returns (found, first equal-or-larger index)
+// Search searches key in index, returns (found, first equal-or-larger index)
 // when all indexes are smaller, returned index is len(index)
-func (n *Node) search(key kv.Key) (bool, int) {
-	i := sort.Search(len(n.keys), func(i int) bool {
-		return n.keys[i].GreaterEqual(key)
+func (n *Node) Search(key kv.Key) (bool, int) {
+	i := sort.Search(len(n.Keys), func(i int) bool {
+		return n.Keys[i].GreaterEqual(key)
 	})
-
-	if i < len(n.keys) && key.EqualTo(n.getKeyAt(i)) {
+	// Found
+	if i < len(n.Keys) && key.EqualTo(n.GetKeyAt(i)) {
 		return true, i
 	}
-
 	return false, i
 }
 
-// insertKeyValueAt inserts key/value pair into leaf node.
-func (n *Node) insertKeyValueAt(i int, key kv.Key, value kv.Value) {
+// InsertKeyValueAt inserts key/value pair into leaf node.
+func (n *Node) InsertKeyValueAt(i int, key kv.Key, value kv.Value) {
 	if !n.IsLeaf {
 		panic("Leaf-only operation")
 	}
-
-	if i > n.keyCount() {
+	if i > n.KeyCount() {
 		panic("Index out of bound")
 	}
 
-	n.keys = append(n.keys, kv.Key{})
-	copy(n.keys[i+1:], n.keys[i:])
-	n.keys[i] = key
+	n.Keys = append(n.Keys, kv.Key{})
+	copy(n.Keys[i+1:], n.Keys[i:])
+	n.Keys[i] = key
 
-	n.values = append(n.values, kv.Value{})
-	copy(n.values[i+1:], n.values[i:])
-	n.values[i] = value
+	n.Values = append(n.Values, kv.Value{})
+	copy(n.Values[i+1:], n.Values[i:])
+	n.Values[i] = value
 }
 
-// insertKeyChildAt inserts key/pgid into internal node.
-func (n *Node) insertKeyChildAt(i int, key kv.Key, pid common.Pgid) {
+// InsertKeyChildAt inserts key/pgid into internal node.
+func (n *Node) InsertKeyChildAt(i int, key kv.Key, pid common.Pgid) {
 	if n.IsLeaf {
 		panic("Internal-only operation")
 	}
-
-	if i > n.keyCount() {
+	if i > n.KeyCount() {
 		panic("Index out of bound")
 	}
 
-	n.keys = append(n.keys, kv.Key{})
-	copy(n.keys[i+1:], n.keys[i:])
-	n.keys[i] = key
+	n.Keys = append(n.Keys, kv.Key{})
+	copy(n.Keys[i+1:], n.Keys[i:])
+	n.Keys[i] = key
 
-	n.childPgids = append(n.childPgids, 0)
-	copy(n.childPgids[i+1:], n.childPgids[i:])
-	n.childPgids[i] = pid
+	n.Cids = append(n.Cids, 0)
+	copy(n.Cids[i+1:], n.Cids[i:])
+	n.Cids[i] = pid
 }
 
-func (n *Node) getKeyAt(i int) kv.Key {
-	return n.keys[i]
+func (n *Node) GetKeyAt(i int) kv.Key {
+	return n.Keys[i]
 }
 
-func (n *Node) getValueAt(i int) kv.Value {
-	return n.values[i]
+func (n *Node) GetValueAt(i int) kv.Value {
+	if !n.IsLeaf {
+		panic("get value in internal node")
+	}
+	return n.Values[i]
+}
+
+func (n *Node) SetValueAt(i int, v kv.Value) {
+	if !n.IsLeaf {
+		panic("set value in internal node")
+	}
+	n.Values[i] = v
 }
 
 func (n *Node) GetChildID(i int) common.Pgid {
 	if n.IsLeaf {
 		panic("get child at leaf node")
 	}
-	return n.childPgids[i]
+	return n.Cids[i]
 }
 
-func (n *Node) setChildID(i int, cid common.Pgid) {
+func (n *Node) SetChildID(i int, cid common.Pgid) {
 	if n.IsLeaf {
 		panic("set child at leaf node")
 	}
-	n.childPgids[i] = cid
+	n.Cids[i] = cid
 }
 
-// removeKeyValueAt removes key/value at given index.
-func (n *Node) removeKeyValueAt(i int) (kv.Key, kv.Value) {
+// RemoveKeyValueAt removes key/value at given index.
+func (n *Node) RemoveKeyValueAt(i int) (kv.Key, kv.Value) {
 	if !n.IsLeaf {
 		panic("Leaf-only operation")
 	}
-
-	if i >= len(n.values) {
+	if i >= len(n.Values) {
 		panic("Invalid index")
 	}
 
-	removedKey := n.keys[i]
-	removedValue := n.values[i]
+	removedKey := n.Keys[i]
+	removedValue := n.Values[i]
 
-	copy(n.keys[i:], n.keys[i+1:])
-	n.keys = n.keys[:len(n.keys)-1]
+	copy(n.Keys[i:], n.Keys[i+1:])
+	n.Keys = n.Keys[:len(n.Keys)-1]
 
-	copy(n.values[i:], n.values[i+1:])
-	n.values = n.values[:len(n.values)-1]
+	copy(n.Values[i:], n.Values[i+1:])
+	n.Values = n.Values[:len(n.Values)-1]
 
 	return removedKey, removedValue
 }
 
-// removeKeyChildAt removes key/child at given index.
-func (n *Node) removeKeyChildAt(i int) (kv.Key, pgid) {
+// RemoveKeyChildAt removes key/child at given index.
+func (n *Node) RemoveKeyChildAt(i int) (kv.Key, common.Pgid) {
 	if n.IsLeaf {
 		panic("Internal-node-only operation")
 	}
-
-	if i >= len(n.childPgids) {
+	if i >= len(n.Cids) {
 		panic("Index out of bound")
 	}
 
-	removedKey := n.keys[i]
-	removedChild := n.childPgids[i]
+	removedKey := n.Keys[i]
+	removedChild := n.Cids[i]
 
-	copy(n.keys[i:], n.keys[i+1:])
-	n.keys = n.keys[:len(n.keys)-1]
+	copy(n.Keys[i:], n.Keys[i+1:])
+	n.Keys = n.Keys[:len(n.Keys)-1]
 
-	copy(n.childPgids[i:], n.childPgids[i+1:])
-	n.childPgids = n.childPgids[:len(n.childPgids)-1]
+	copy(n.Cids[i:], n.Cids[i+1:])
+	n.Cids = n.Cids[:len(n.Cids)-1]
 
 	return removedKey, removedChild
 }
 
-// size returns page size after mmap
-func (n *Node) mapSize() int {
-	size := page.HeaderSize + pairHeaderSize*n.keyCount()
-
-	for i := range n.keys {
-		size += len(n.getKeyAt(i))
-
+// Size returns size when write to memory page.
+func (n *Node) Size() int {
+	size := page.HeaderSize + page.PairInfoSize*n.KeyCount()
+	for i := range n.Keys {
+		size += len(n.GetKeyAt(i))
 		if n.IsLeaf {
-			size += len(n.getValueAt(i))
+			size += len(n.GetValueAt(i))
 		}
 	}
-
 	return size
 }
 
-func (n *Node) keyCount() int {
-	return len(n.keys)
+func (n *Node) KeyCount() int {
+	return len(n.Keys)
 }
 
-// split splits node into multiple siblings according to size and keys.
+// Split splits node into multiple siblings according to size and keys.
 // split sets Parent for new node, but will not update new nodes to Parent node.
-func (n *Node) split() []*Node {
+func (n *Node) Split() []*Node {
 	nodes := []*Node{}
 	node := n
-
 	for {
 		next := node.splitTwo()
 		if next == nil {
@@ -278,69 +283,61 @@ func (n *Node) split() []*Node {
 	return nodes
 }
 
-// splitTwo splits node into two if:
-// 1. node map size > pageSize, and
-// 2. node has more than splitKeyCount
+// Underfill returns whether node should be merged.
+func (n *Node) Underfill() bool {
+	return n.KeyCount() < minKeys || n.Size() < underfillThreshold
+}
+
+// Overfill returns node size > pageSize and key > maxKeys.
+func (n *Node) Overfill() bool {
+	return n.KeyCount() > maxKeys && n.Size() > page.PageSize
+}
+
+func isSplitPoint(i, size int) bool {
+	return i >= minKeys && size >= splitThreshold
+}
+
+// splitTwo splits overfilled nodes.
 // splitTwo will not update new node to Parent node.
 func (n *Node) splitTwo() *Node {
-	if n.keyCount() <= splitKeyCount {
+	if !n.Overfill() {
 		return nil
 	}
-
-	if n.mapSize() <= pageSize {
-		return nil
-	}
-
-	// Split oversized page with > splitKeyCount keys
 	size := page.HeaderSize
 	splitIndex := 0
-
-	for i, key := range n.keys {
-		size += pairHeaderSize
+	// Search split point
+	for i, key := range n.Keys {
+		size += page.PairInfoSize
 		size += len(key)
-
 		if n.IsLeaf {
-			size += len(n.values[i])
+			size += len(n.Values[i])
 		}
-
-		// Split at key >= minKeyCount and size >= splitPagePercent * pageSize
-		if i >= minKeyCount && size >= int(float64(pageSize)*splitPagePercent) {
+		if isSplitPoint(i, size) {
 			splitIndex = i
-
 			break
 		}
 	}
-
-	// Split root node
-	if n.isRoot() {
+	// If it's root, prepare a new parent
+	if n.IsRoot() {
 		n.Parent = &Node{
-			keys:       []kv.Key{n.key},
-			childPgids: []common.Pgid{n.pgid},
+			Keys: []kv.Key{n.Key},
+			Cids: []common.Pgid{n.Index},
 		}
 	}
-
 	next := Node{
 		IsLeaf: n.IsLeaf,
 		Parent: n.Parent,
 	}
-
-	next.keys = n.keys[splitIndex:]
-	n.keys = n.keys[:splitIndex]
-
+	// Split key, value, children
+	next.Keys = n.Keys[splitIndex:]
+	n.Keys = n.Keys[:splitIndex]
 	if n.IsLeaf {
-		next.values = n.values[splitIndex:]
-		n.values = n.values[:splitIndex]
+		next.Values = n.Values[splitIndex:]
+		n.Values = n.Values[:splitIndex]
+	} else {
+		next.Cids = n.Cids[splitIndex:]
+		n.Cids = n.Cids[:splitIndex]
 	}
 
 	return &next
-}
-
-// free returns page to freelist.
-func (n *Node) free() {
-	delete(n.tx.nodes, n.pgid)
-	delete(n.tx.pages, n.pgid)
-
-	if n.pgid != 0 {
-		n.tx.db.freelist.free(n.tx.id, n.tx.getPage(n.pgid))
-	}
 }

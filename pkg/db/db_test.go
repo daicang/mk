@@ -3,6 +3,9 @@ package db
 import (
 	"os"
 	"testing"
+
+	"github.com/daicang/mk/pkg/common"
+	"github.com/daicang/mk/pkg/page"
 )
 
 var (
@@ -11,15 +14,11 @@ var (
 
 func TestCreateNew(t *testing.T) {
 	opt := Options{
-		ReadOnly: false,
-		Path:     dataPath,
+		Path: dataPath,
 	}
-
 	os.Remove(dataPath)
-
 	db := DB{
-		path:     opt.Path,
-		readOnly: opt.ReadOnly,
+		path: opt.Path,
 	}
 
 	ok := db.createNew()
@@ -32,40 +31,37 @@ func TestCreateNew(t *testing.T) {
 		t.Errorf("Failed to check data file: %v", err)
 	}
 
-	buf := make([]byte, 3*pageSize)
+	buf := make([]byte, 3*page.PageSize)
 	fd, _ := os.OpenFile(db.path, os.O_CREATE, 0644)
 
 	fd.Read(buf)
 
 	for i := 0; i < 3; i++ {
-		p := bufferPage(buf, i)
-		if p.id != pgid(i) {
+		p := page.FromBuffer(buf, i)
+		if p.Index != common.Pgid(i) {
 			t.Errorf("Incorrect page id")
 		}
 
 		switch i {
 		case 0:
-			if !p.isMeta() {
+			if !p.IsMeta() {
 				t.Error("First page should be meta page")
 			}
-
-			mt := p.getMeta()
-
+			mt := pageMeta(p)
 			if mt.magic != Magic {
 				t.Errorf("Meta page magic value error")
 			}
-
-			if mt.root != 2 {
+			if mt.rootPage != 2 {
 				t.Errorf("Meta page root pgid error")
 			}
 
 		case 1:
-			if !p.isFreelist() {
+			if !p.IsFreelist() {
 				t.Errorf("Second page should be freelist page")
 			}
 
 		case 2:
-			if !p.isLeaf() {
+			if !p.IsLeaf() {
 				t.Errorf("Root page should be leaf")
 			}
 		}
