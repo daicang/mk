@@ -26,7 +26,7 @@ func TestMerge(t *testing.T) {
 	a = pgids{1, 2, 3}
 	b = pgids{4, 5}
 	expect = pgids{1, 2, 3, 4, 5}
-
+	result = merge(b, a)
 	if !reflect.DeepEqual(result, expect) {
 		t.Errorf("expect %v get %v", expect, result)
 	}
@@ -34,7 +34,7 @@ func TestMerge(t *testing.T) {
 	a = pgids{1, 3, 4, 7, 9}
 	b = pgids{2, 4, 6, 8, 10, 11, 12}
 	expect = pgids{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
-
+	result = merge(b, a)
 	if !reflect.DeepEqual(result, expect) {
 		t.Errorf("expect %v get %v", expect, result)
 	}
@@ -68,7 +68,7 @@ func TestAllocate(t *testing.T) {
 	}
 
 	f.ids = pgids{1, 3, 5, 6, 7}
-	pid, success = f.Allocate(3)
+	_, success = f.Allocate(3)
 	if success {
 		t.Errorf("allocate should fail")
 	}

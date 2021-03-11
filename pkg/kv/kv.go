@@ -8,11 +8,11 @@ type Key []byte
 // Value represents type for value
 type Value []byte
 
-func (k Key) lessThan(other Key) bool {
+func (k Key) lessThan(other Key) bool { // nolint
 	return bytes.Compare(k, other) == -1
 }
 
-func (k Key) lessEqual(other Key) bool {
+func (k Key) lessEqual(other Key) bool { // nolint
 	return bytes.Compare(k, other) < 1
 }
 
