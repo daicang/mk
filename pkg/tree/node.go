@@ -341,3 +341,23 @@ func (n *Node) splitTwo() *Node {
 
 	return &next
 }
+
+// Dereference moves key and value to heap.
+func (n *Node) Dereference() {
+	buf := make(kv.Key, len(n.Key))
+	copy(buf, n.Key)
+	n.Key = buf
+
+	for i, key := range n.Keys {
+		buf := make(kv.Key, len(key))
+		copy(buf, key)
+		n.Keys[i] = buf
+	}
+	if n.IsLeaf {
+		for i, val := range n.Values {
+			buf := make(kv.Value, len(val))
+			copy(buf, val)
+			n.Values[i] = buf
+		}
+	}
+}

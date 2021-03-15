@@ -2,7 +2,7 @@ package page
 
 import "testing"
 
-func TestPageFlag(t *testing.T) {
+func TestPageBuffer(t *testing.T) {
 	buf := make([]byte, PageSize)
 	p := FromBuffer(buf, 0)
 	p.Index = 46

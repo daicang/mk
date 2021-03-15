@@ -28,9 +28,9 @@ type Tx struct {
 	pages map[common.Pgid]*page.Page
 }
 
-// NewWritableTx creates new writable transaction.
-func NewWritableTx(db *DB) (*Tx, bool) {
-	if db.writableTx != nil {
+// NewWritable creates new writable transaction.
+func NewWritable(db *DB) (*Tx, bool) {
+	if db.wtx != nil {
 		fmt.Println("Cannot create multiple writable tx")
 		return nil, false
 	}
@@ -64,7 +64,7 @@ func NewWritableTx(db *DB) (*Tx, bool) {
 	tx.pages[db.meta.rootPage] = rootPage
 
 	db.txs = append(db.txs, &tx)
-	db.writableTx = &tx
+	db.wtx = &tx
 
 	return &tx, true
 }
@@ -288,11 +288,13 @@ func (tx *Tx) spillNode(n *tree.Node) bool {
 		return true
 	}
 	// Spill children first
-	for i := 0; i < n.KeyCount(); i++ {
-		ch := tx.getChildAt(n, i)
-		ok := tx.spillNode(ch)
-		if !ok {
-			return false
+	if !n.IsLeaf {
+		for i := 0; i < n.KeyCount(); i++ {
+			ch := tx.getChildAt(n, i)
+			ok := tx.spillNode(ch)
+			if !ok {
+				return false
+			}
 		}
 	}
 	// Split self

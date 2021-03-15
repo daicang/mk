@@ -1,103 +1,111 @@
 package db
 
 import (
+	"io/ioutil"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/daicang/mk/pkg/common"
 	"github.com/daicang/mk/pkg/page"
 )
 
-var (
-	dataPath = "../testing_data/data"
-)
-
 func TestCreateNew(t *testing.T) {
-	opt := Options{
-		Path: dataPath,
+	testingDir, err := ioutil.TempDir("", "testing_data")
+	if err != nil {
+		t.Fatalf("Failed to create testing dir")
 	}
-	os.Remove(dataPath)
-	db := DB{
-		path: opt.Path,
-	}
+	defer os.Remove(testingDir)
 
+	db := DB{
+		path: filepath.Join(testingDir, "db"),
+	}
 	ok := db.initFile()
 	if !ok {
-		t.Error("Failed to create new DB")
-	}
-
-	_, err := os.Stat(db.path)
-	if err != nil {
-		t.Errorf("Failed to check data file: %v", err)
+		t.Fatalf("Failed to create new DB")
 	}
 
 	buf := make([]byte, 3*page.PageSize)
-	fd, _ := os.OpenFile(db.path, os.O_CREATE, 0644)
-
-	fd.Read(buf)
+	fd, _ := os.OpenFile(db.path, os.O_RDONLY, 0644)
+	_, err = fd.Read(buf)
+	if err != nil {
+		t.Fatalf("Failed to read db file")
+	}
 
 	for i := 0; i < 3; i++ {
 		p := page.FromBuffer(buf, common.Pgid(i))
-		if p.Index != common.Pgid(i) {
-			t.Errorf("Incorrect page id")
-		}
 
+		if p.Index != common.Pgid(i) {
+			t.Fatalf("Incorrect page id: expect %d get %d", i, p.Index)
+		}
 		switch i {
 		case 0:
 			if !p.IsMeta() {
-				t.Error("First page should be meta page")
+				t.Fatal("First page should be meta page")
 			}
 			mt := pageMeta(p)
 			if mt.magic != Magic {
-				t.Errorf("Meta page magic value error")
+				t.Fatalf("Meta page magic value error")
 			}
 			if mt.rootPage != 2 {
-				t.Errorf("Meta page root pgid error")
+				t.Fatalf("Meta page root pgid error")
 			}
-
 		case 1:
 			if !p.IsFreelist() {
-				t.Errorf("Second page should be freelist page")
+				t.Fatalf("Second page should be freelist page")
 			}
-
 		case 2:
 			if !p.IsLeaf() {
-				t.Errorf("Root page should be leaf")
+				t.Fatalf("Root page should be leaf")
 			}
 		}
 	}
 }
 
-// func TestDB(t *testing.T) {
-// 	opt := Options{
-// 		ReadOnly: false,
-// 		Path:     dataPath,
+func TestOpen(t *testing.T) {
+	testingDir, err := ioutil.TempDir("", "testing_data")
+	if err != nil {
+		t.Fatalf("Failed to create testing dir")
+	}
+	defer os.Remove(testingDir)
+
+	_, ok := Open(Options{
+		Path: filepath.Join(testingDir, "db"),
+	})
+	if !ok {
+		t.Fatal("Failed to open DB")
+	}
+}
+
+// func TestWriteTx(t *testing.T) {
+// 	testingDir, err := ioutil.TempDir("", "testing_data")
+// 	if err != nil {
+// 		t.Fatalf("Failed to create testing dir")
 // 	}
+// 	defer os.Remove(testingDir)
 
-// 	os.Remove(dataPath)
-
+// 	opt := Options{
+// 		Path: filepath.Join(testingDir, "db"),
+// 	}
 // 	db, ok := Open(opt)
 // 	if !ok {
 // 		t.Fatal("Failed to open DB")
 // 	}
-
-// 	tx, ok := NewWritableTx(db)
+// 	tx, ok := NewWritable(db)
 // 	if !ok {
 // 		t.Fatal("Failed to create tx")
 // 	}
 
-// 	kvs := randomKV(1000)
-
+// 	kvs := testutil.RandomKV(1000)
 // 	for key, value := range kvs {
 // 		found, old := tx.Set([]byte(key), []byte(value))
 // 		if found {
-// 			t.Errorf("Found should be false: old=%s", old)
+// 			t.Fatalf("Found should be false: old=%s", old)
 // 		}
 // 	}
 
 // 	ok = tx.Commit()
 // 	if !ok {
-// 		t.Errorf("Failed to commit")
+// 		t.Fatalf("Failed to commit")
 // 	}
-
 // }

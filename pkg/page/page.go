@@ -25,7 +25,6 @@ const (
 const (
 	// PairInfoSize is size for each pair info
 	PairInfoSize = int(unsafe.Sizeof(pairInfo{}))
-	maxPairs     = 1 << 10
 )
 
 var (
@@ -41,12 +40,12 @@ type Page struct {
 	Overflow int
 	// key/freeslot count
 	Count int
-	// starting addr of data.
-	Data uintptr
 	// index at mmap file
 	Index common.Pgid
 	// type mark
 	Flags uint16
+	// starting addr of data.
+	Data uintptr
 }
 
 // pairInfo stores metadata for:
@@ -81,9 +80,9 @@ func (pgs Pages) Swap(i, j int) {
 // String returns string for print.
 func (p *Page) String() string {
 	return fmt.Sprintf(
-		"%s[%d] keys=%d, overflow=%d",
-		p.getType(),
+		"page[%d] %s keys=%d, overflow=%d",
 		p.Index,
+		p.getType(),
 		p.Count,
 		p.Overflow,
 	)
@@ -112,22 +111,22 @@ func (p *Page) IsInternal() bool {
 // getType returns page type as string
 func (p *Page) getType() string {
 	if (p.Flags & FlagMeta) != 0 {
-		return "meta page"
+		return "meta"
 	}
 	if (p.Flags & FlagFreelist) != 0 {
-		return "freelist page"
+		return "freelist"
 	}
 	if (p.Flags & FlagInternal) != 0 {
-		return "internal page"
+		return "internal"
 	}
 	if (p.Flags & FlagLeaf) != 0 {
-		return "leaf page"
+		return "leaf"
 	}
-	panic("Unknown page")
+	panic("Unknown page type")
 }
 
 func (p *Page) getPairInfo(i int) *pairInfo {
-	return &(*[maxPairs]pairInfo)(unsafe.Pointer(&p.Data))[i]
+	return &(*[common.MmapMaxSize]pairInfo)(unsafe.Pointer(&p.Data))[i]
 }
 
 func (p *Page) SetPairInfo(i int, ks, vs uint32, cid common.Pgid, offset uint32) {
@@ -146,7 +145,7 @@ func (p *Page) SetPairInfo(i int, ks, vs uint32, cid common.Pgid, offset uint32)
 // note: the key is in mmap buffer, not heap
 func (p *Page) GetKeyAt(i int) kv.Key {
 	pair := p.getPairInfo(i)
-	buf := (*[maxPairs]byte)(unsafe.Pointer(&p.Data))[pair.offset:]
+	buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(&p.Data))[pair.offset:]
 	return buf[:pair.keySize]
 }
 
@@ -158,8 +157,7 @@ func (p *Page) GetValueAt(i int) kv.Value {
 	}
 	pair := p.getPairInfo(i)
 	valueOffset := pair.offset + pair.keySize
-	buf := (*[maxPairs]byte)(unsafe.Pointer(&p.Data))[valueOffset:]
-
+	buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(&p.Data))[valueOffset:]
 	return buf[:pair.valueSize]
 }
 

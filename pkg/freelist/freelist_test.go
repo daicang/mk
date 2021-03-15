@@ -31,7 +31,7 @@ func TestMerge(t *testing.T) {
 		t.Errorf("expect %v get %v", expect, result)
 	}
 
-	a = pgids{1, 3, 4, 7, 9}
+	a = pgids{1, 3, 5, 7, 9}
 	b = pgids{2, 4, 6, 8, 10, 11, 12}
 	expect = pgids{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	result = merge(b, a)
@@ -67,7 +67,7 @@ func TestAllocate(t *testing.T) {
 		t.Errorf("incorrect ids: %v", f.ids)
 	}
 
-	f.ids = pgids{1, 3, 5, 6, 7}
+	f.ids = pgids{1, 3, 5, 6, 8}
 	_, success = f.Allocate(3)
 	if success {
 		t.Errorf("allocate should fail")

@@ -23,5 +23,6 @@ mk intends to be a minimal runable k-v storage using b+tree and mmap, for learni
 
 ## Todos
 
-- Audit
-- Visualization
+- Support transaction rollback
+- Collect audit data
+- Visualization b+tree insertion/deletion process

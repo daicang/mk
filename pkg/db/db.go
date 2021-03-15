@@ -14,7 +14,7 @@ import (
 
 const (
 	// Magic indentifies DB file
-	Magic = 0xDCDB2020
+	Magic = 0x20202021
 )
 
 const (
@@ -43,7 +43,7 @@ type DB struct {
 	// All current transaction
 	txs []*Tx
 	// There can only be one writable transaction
-	writableTx *Tx
+	wtx *Tx
 	// mmapSize is the mmaped file size
 	mmapSize int
 	// single page pool
@@ -102,7 +102,7 @@ func Open(opts Options) (*DB, bool) {
 		return nil, false
 	}
 	// Read DB file
-	buf := make([]byte, page.PageSize)
+	buf := make([]byte, 2*page.PageSize)
 	_, err = db.file.Read(buf)
 	if err != nil {
 		fmt.Printf("Failed to read DB file: %v\n", err)
@@ -135,12 +135,12 @@ func Open(opts Options) (*DB, bool) {
 
 // initFile initiates new DB file.
 func (db *DB) initFile() bool {
-	var err error
-	db.file, err = os.Create(db.path)
+	fd, err := os.Create(db.path)
 	if err != nil {
 		fmt.Printf("Failed to create new DB file: %v\n", err)
 		return false
 	}
+	db.file = fd
 
 	buf := make([]byte, 3*page.PageSize)
 	// First page is meta page
@@ -201,9 +201,9 @@ func (db *DB) allocate(count int) (*page.Page, bool) {
 	}
 
 	// When no proper "hole", enlarge memory mapping
-	p.Index = db.writableTx.meta.totalPages
-	db.writableTx.meta.totalPages += common.Pgid(count)
-	mmapSize := int(db.writableTx.meta.totalPages * common.Pgid(page.PageSize))
+	p.Index = db.wtx.meta.totalPages
+	db.wtx.meta.totalPages += common.Pgid(count)
+	mmapSize := int(db.wtx.meta.totalPages * common.Pgid(page.PageSize))
 
 	// Enlarge mmap
 	if mmapSize > db.mmapSize {
@@ -255,8 +255,9 @@ func (db *DB) mmap(sz int) bool {
 	}
 
 	sz = roundMmapSize(sz)
-
-	// TODO: dereference before unmapping
+	if db.wtx != nil {
+		db.wtx.root.Dereference()
+	}
 
 	buf, err := syscall.Mmap(
 		int(db.file.Fd()),
@@ -271,7 +272,8 @@ func (db *DB) mmap(sz int) bool {
 	}
 
 	db.mmBuf = &buf
-	db.mmSizedBuf = (*[common.MmapMaxSize]byte)(unsafe.Pointer(&buf))
+	// buf is []byte slice, so &buf != &buf[0]
+	db.mmSizedBuf = (*[common.MmapMaxSize]byte)(unsafe.Pointer(&buf[0]))
 	db.mmapSize = sz
 	page0 := page.FromBuffer(*db.mmBuf, 0)
 	db.meta = pageMeta(page0)
