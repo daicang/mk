@@ -1,17 +1,13 @@
-package db
+package mk
 
 import (
 	"fmt"
 	"sort"
 	"unsafe"
-
-	"github.com/daicang/mk/pkg/common"
-	"github.com/daicang/mk/pkg/kv"
-	"github.com/daicang/mk/pkg/page"
-	"github.com/daicang/mk/pkg/tree"
 )
 
-// Tx represents transaction.
+// Tx represents transaction,
+// the MVCC layer above storage structure.
 type Tx struct {
 	db *DB
 	// Transaction ID
@@ -19,13 +15,13 @@ type Tx struct {
 	// Read-only mark
 	writable bool
 	// Pointer to mata struct
-	meta *Meta
+	meta *DBMeta
 	// root points to the b+tree root
-	root *tree.Node
+	root *NodeInterface
 	// All accessed nodes in this transaction.
-	nodes map[common.Pgid]*tree.Node
-	// All accessed pages in this transaction.
-	pages map[common.Pgid]*page.Page
+	nodes map[pgid]*NodeInterface
+	// Dirty pages in this tx, nil for read-only tx.
+	dirtyPages map[pgid]*PageInterface
 }
 
 // NewWritable creates new writable transaction.
@@ -34,34 +30,25 @@ func NewWritable(db *DB) (*Tx, bool) {
 		fmt.Println("Cannot create multiple writable tx")
 		return nil, false
 	}
+	db.lastTxID++
+	tx := Tx{
+		db:         db,
+		id:         db.lastTxID,
+		writable:   true,
+		meta:       db.meta.copy(),
+		nodes:      map[pgid]*Node{},
+		dirtyPages: map[pgid]*Page{},
+	}
+
 	rootPage := db.getPage(db.meta.rootPage)
-	root := &tree.Node{
+	tx.root = &Node{
 		Parent: nil,
 	}
-
-	fmt.Printf("rootid=%d\n", db.meta.rootPage)
-	fmt.Printf("Page: %s\n", rootPage)
-
-	root.ReadPage(rootPage)
-	fmt.Printf("Node: %s\n", root)
-
-	// TESTING
-	if !root.IsLeaf {
-		panic("root should be leaf")
-	}
-
-	tx := Tx{
-		db:       db,
-		id:       1,
-		writable: true,
-		meta:     db.meta.copy(),
-		root:     root,
-		nodes:    map[common.Pgid]*tree.Node{},
-		pages:    map[common.Pgid]*page.Page{},
-	}
-
-	tx.nodes[db.meta.rootPage] = root
-	tx.pages[db.meta.rootPage] = rootPage
+	// fmt.Printf("rootid=%d\n", db.meta.rootPage)
+	// fmt.Printf("Page: %s\n", rootPage)
+	tx.root.ReadPage(rootPage)
+	// fmt.Printf("Root: %s\n", root)
+	tx.nodes[db.meta.rootPage] = tx.root
 
 	db.txs = append(db.txs, &tx)
 	db.wtx = &tx
@@ -71,35 +58,38 @@ func NewWritable(db *DB) (*Tx, bool) {
 
 // NewReadOnlyTx returns new read-only transaction.
 func NewReadOnlyTx(db *DB) (*Tx, bool) {
+	db.lastTxID++
+	tx := Tx{
+		db:         db,
+		id:         db.lastTxID,
+		writable:   false,
+		meta:       db.meta.copy(),
+		nodes:      map[pgid]*Node{},
+		dirtyPages: nil,
+	}
 	rootPage := db.getPage(db.meta.rootPage)
-	root := &tree.Node{
+	tx.root = &Node{
 		Parent: nil,
 	}
-	root.ReadPage(rootPage)
+	tx.root.ReadPage(rootPage)
+	tx.nodes[db.meta.rootPage] = tx.root
 
-	tx := Tx{
-		db:       db,
-		id:       1,
-		writable: false,
-		meta:     db.meta.copy(),
-		root:     root,
-		nodes:    map[common.Pgid]*tree.Node{},
-		pages:    map[common.Pgid]*page.Page{},
-	}
-
-	tx.nodes[db.meta.rootPage] = root
-	tx.pages[db.meta.rootPage] = rootPage
 	db.txs = append(db.txs, &tx)
 
 	return &tx, true
 }
 
-// allocate returns contiguous pages.
-func (tx *Tx) allocate(count int) (*page.Page, bool) {
+// allocate allocates contiguous pages.
+func (tx *Tx) allocate(count int) (*Page, bool) {
 	if !tx.writable {
 		panic("Read only tx can't allocate")
 	}
-	return tx.db.allocate(count)
+	pg, ok := tx.db.allocate(count)
+	if ok {
+		// Put new page in dirtyPages
+		tx.dirtyPages[pg.Index] = pg
+	}
+	return pg, ok
 }
 
 func (tx *Tx) close() {}
@@ -110,10 +100,9 @@ func (tx *Tx) Commit() bool {
 		panic("commit read-only tx")
 	}
 	// Merge underfill nodes
-	for _, node := range tx.nodes {
-		tx.merge(node)
+	for _, n := range tx.nodes {
+		tx.merge(n)
 	}
-
 	// Split nodes and write to memory page
 	ok := tx.spillNode(tx.root)
 	if !ok {
@@ -124,6 +113,15 @@ func (tx *Tx) Commit() bool {
 
 	// Root may be changed after spill
 	tx.root = tx.root.Root()
+
+	// Free and reallocate freelist page
+	tx.db.freelist.Add(tx.db.getPage(tx.meta.freelistPage))
+	p, ok := tx.allocate(tx.db.freelist.Size())
+	if !ok {
+		return false
+	}
+	tx.db.freelist.WritePage(p)
+	tx.meta.freelistPage = p.Index
 
 	// Write to disk
 	ok = tx.write()
@@ -137,19 +135,32 @@ func (tx *Tx) Commit() bool {
 	return true
 }
 
+type Pages []*PageHeader
+
+func (pgs Pages) Len() int {
+	return len(pgs)
+}
+
+func (pgs Pages) Less(i, j int) bool {
+	return pgs[i].Index < pgs[j].Index
+}
+
+func (pgs Pages) Swap(i, j int) {
+	pgs[i], pgs[j] = pgs[j], pgs[i]
+}
+
 // write writes all pages hold by this transaction.
 func (tx *Tx) write() bool {
-	pages := page.Pages{}
-	for _, p := range tx.pages {
+	// Write pages to disk in order
+	pages := Pages{}
+	for _, p := range tx.dirtyPages {
 		pages = append(pages, p)
 	}
 	sort.Sort(pages)
-
-	// Write pages to disk
 	for _, p := range pages {
-		pos := int64(p.Index) * int64(page.PageSize)
-		size := (p.Overflow + 1) * page.PageSize
-		buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(p))
+		pos := int64(p.Index) * int64(PageSize)
+		size := (p.Overflow + 1) * PageSize
+		buf := (*[MaxMapBytes]byte)(unsafe.Pointer(p))
 		_, err := tx.db.file.WriteAt(buf[:size], pos)
 		if err != nil {
 			fmt.Printf("Failed to write page: %v\n", err)
@@ -157,10 +168,10 @@ func (tx *Tx) write() bool {
 		}
 	}
 
-	// Return single pages to page pool
 	for _, p := range pages {
 		if p.Overflow == 0 {
-			buf := (*[common.MmapMaxSize]byte)(unsafe.Pointer(p))[:page.PageSize]
+			// Return single pages to page pool
+			buf := (*[PageSize]byte)(unsafe.Pointer(p))
 			for i := range buf {
 				buf[i] = 0
 			}
@@ -171,34 +182,32 @@ func (tx *Tx) write() bool {
 	return true
 }
 
-// TODO:
 func (tx *Tx) rollback() {
-	// delete()
+	if tx.writable {
+		tx.db.freelist.Rollback()
+		// TODO: freelist.reload()
+	}
+	tx.close()
 }
 
 // getPage returns page from pgid.
-func (tx *Tx) getPage(id common.Pgid) *page.Page {
-	// Check page buffer first
-	p, exist := tx.pages[id]
+func (tx *Tx) getPage(id pgid) *Page {
+	p, exist := tx.dirtyPages[id]
 	if exist {
 		return p
 	}
-	// If not found, return page from memory map
-	p = tx.db.getPage(id)
-	tx.pages[id] = p
-
-	return p
+	return tx.db.getPage(id)
 }
 
 // getNode returns node from pgid.
-func (tx *Tx) getNode(id common.Pgid, parent *tree.Node) *tree.Node {
+func (tx *Tx) getNode(id pgid, parent *Node) *Node {
 	n, exist := tx.nodes[id]
 	if exist {
 		return n
 	}
 
 	p := tx.getPage(id)
-	n = &tree.Node{
+	n = &Node{
 		Parent: parent,
 	}
 
@@ -209,7 +218,7 @@ func (tx *Tx) getNode(id common.Pgid, parent *tree.Node) *tree.Node {
 }
 
 // Get searches given key, returns (found, value)
-func (tx *Tx) Get(key kv.Key) (bool, kv.Value) {
+func (tx *Tx) Get(key Key) (bool, Value) {
 	curr := tx.root
 	for !curr.IsLeaf {
 		_, i := curr.Search(key)
@@ -219,11 +228,11 @@ func (tx *Tx) Get(key kv.Key) (bool, kv.Value) {
 	if found {
 		return true, curr.GetValueAt(i)
 	}
-	return false, kv.Value{}
+	return false, Value{}
 }
 
 // Set sets key with value, returns (found, oldValue)
-func (tx *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
+func (tx *Tx) Set(key Key, value Value) (bool, Value) {
 	if !tx.writable {
 		panic("Readonly transaction")
 	}
@@ -241,7 +250,7 @@ func (tx *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
 			curr.Balanced = false
 			curr.InsertKeyValueAt(i, key, value)
 
-			return false, kv.Value{}
+			return false, Value{}
 		}
 
 		curr = tx.getChildAt(curr, i)
@@ -249,7 +258,7 @@ func (tx *Tx) Set(key kv.Key, value kv.Value) (bool, kv.Value) {
 }
 
 // Remove removes given key from node recursively, returns (found, oldValue).
-func (tx *Tx) Remove(key kv.Key) (bool, kv.Value) {
+func (tx *Tx) Remove(key Key) (bool, Value) {
 	if !tx.writable {
 		panic("Readonly transaction")
 	}
@@ -275,15 +284,16 @@ func (tx *Tx) Remove(key kv.Key) (bool, kv.Value) {
 }
 
 // getChildAt returns one child node.
-func (tx *Tx) getChildAt(n *tree.Node, i int) *tree.Node {
+func (tx *Tx) getChildAt(n *Node, i int) *Node {
 	if i < 0 || i >= n.KeyCount() {
 		panic(fmt.Sprintf("Invalid child index: %d out of %d", i, n.KeyCount()))
 	}
 	return tx.getNode(n.GetChildID(i), n)
 }
 
-// spill recursively splits node and writes to pages(not to disk).
-func (tx *Tx) spillNode(n *tree.Node) bool {
+// spill splits node and writes to pages(not to disk).
+// spill run top-down
+func (tx *Tx) spillNode(n *Node) bool {
 	if n.Spilled {
 		return true
 	}
@@ -298,41 +308,41 @@ func (tx *Tx) spillNode(n *tree.Node) bool {
 		}
 	}
 	// Split self
-	for _, node := range n.Split() {
-		// Ensure page for each node.
-		// Only the first node could have associated page,
-		// free this page first.
-		if node.Index != 0 {
-			tx.db.freelist.Add(tx.getPage(node.Index))
-			// Mark node as page-freed
-			node.Index = 0
+	for _, n := range n.Split() {
+		// Since node is changed after split, we need
+		// to allocate new pages for each node.
+		if n.Index != 0 {
+			// When node has an old page, return to
+			// freelist
+			tx.db.freelist.Add(tx.getPage(n.Index))
+			n.Index = 0
 		}
-		// Then allocate page for node.
+		// Allocate new page
 		// For simplicity, allocate one more page
-		p, ok := tx.allocate((n.Size() / page.PageSize) + 1)
+		p, ok := tx.allocate((n.Size() / PageSize) + 1)
 		if !ok {
 			return false
 		}
-		node.Index = p.Index
+		n.Index = p.Index
 		// Write to page
-		node.WritePage(p)
-		node.Spilled = true
-		if node.Key == nil {
-			node.Key = node.Keys[0]
+		n.WritePage(p)
+		// Spilled is only set to true here
+		n.Spilled = true
+		if n.Key == nil {
+			n.Key = n.Keys[0]
 		}
-
 		// Insert new node to parent.
-		if !node.IsRoot() {
-			_, i := node.Parent.Search(node.Key)
-			node.Parent.InsertKeyChildAt(i, node.Key, node.Index)
+		if !n.IsRoot() {
+			_, i := n.Parent.Search(n.Key)
+			n.Parent.InsertKeyChildAt(i, n.Key, n.Index)
 		}
 	}
 	return true
 }
 
-// merge merges underfill nodes.
-// merge runs a bottom-up way.
-func (tx *Tx) merge(n *tree.Node) {
+// merge merges underfilled nodes with sibliings.
+// merge runs bottom-up
+func (tx *Tx) merge(n *Node) {
 	if n.Balanced {
 		return
 	}
@@ -374,8 +384,8 @@ func (tx *Tx) merge(n *tree.Node) {
 		panic("Parent should have at least one child")
 	}
 
-	var from *tree.Node
-	var to *tree.Node
+	var from *Node
+	var to *Node
 	var fromIdx int
 
 	if n.Index == n.Parent.Cids[0] {
@@ -410,9 +420,9 @@ func (tx *Tx) merge(n *tree.Node) {
 }
 
 // freeNode returns page to freelistx.
-func (tx *Tx) freeNode(n *tree.Node) {
+func (tx *Tx) freeNode(n *Node) {
 	delete(tx.nodes, n.Index)
-	delete(tx.pages, n.Index)
+	delete(tx.dirtyPages, n.Index)
 	if n.Index != 0 {
 		tx.db.freelist.Add(tx.getPage(n.Index))
 	}

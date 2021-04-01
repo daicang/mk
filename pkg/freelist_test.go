@@ -1,11 +1,8 @@
-package freelist
+package mk
 
 import (
 	"reflect"
 	"testing"
-
-	"github.com/daicang/mk/pkg/common"
-	"github.com/daicang/mk/pkg/page"
 )
 
 func TestMerge(t *testing.T) {
@@ -79,11 +76,11 @@ func TestReadWrite(t *testing.T) {
 	size := 200
 
 	for i := 0; i < size; i++ {
-		f.ids = append(f.ids, common.Pgid(i))
+		f.ids = append(f.ids, pgid(i))
 	}
 
 	buf := make([]byte, f.Size())
-	p := page.FromBuffer(buf, 0)
+	p := FromBuffer(buf, 0)
 
 	f.WritePage(p)
 

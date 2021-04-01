@@ -1,4 +1,4 @@
-package db
+package mk
 
 import (
 	"fmt"
@@ -6,10 +6,6 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
-
-	"github.com/daicang/mk/pkg/common"
-	"github.com/daicang/mk/pkg/freelist"
-	"github.com/daicang/mk/pkg/page"
 )
 
 const (
@@ -30,55 +26,35 @@ type Options struct {
 
 // DB represents one database.
 type DB struct {
+	// DB info
+	// Meta block
+	meta *DBMeta
+
+	// Mmap info
 	// Path to memory mapping file
 	path string
-	// Meta block
-	meta *Meta
 	// Memory map file pointer
 	file *os.File
+	// mmapSize is the mmaped file size
+	mmapSize int
 	// pointer to memory map array, without size limit
 	mmBuf *[]byte
 	// pointer to memory map array, with size limit
-	mmSizedBuf *[common.MmapMaxSize]byte
+	mmSizedBuf *[MaxMapBytes]byte
+
+	// Transactions
+	// Last transaction ID
+	lastTxID uint32
 	// All current transaction
 	txs []*Tx
 	// There can only be one writable transaction
 	wtx *Tx
-	// mmapSize is the mmaped file size
-	mmapSize int
+
+	// Pages
 	// single page pool
 	singlePages sync.Pool
 	// mmap empty page slots
-	freelist *freelist.Freelist
-}
-
-// Meta holds database metadata.
-type Meta struct {
-	// magic should be mkMagic
-	magic uint32
-	// number of allocated pages, also id of next new page
-	totalPages common.Pgid
-	// freelist page id
-	freelistPage common.Pgid
-	// root page id
-	rootPage common.Pgid
-}
-
-func (m *Meta) copy() *Meta {
-	return &Meta{
-		magic:        m.magic,
-		rootPage:     m.rootPage,
-		freelistPage: m.freelistPage,
-		totalPages:   m.totalPages,
-	}
-}
-
-// pageMeta retrieves meta struct from page.
-func pageMeta(p *page.Page) *Meta {
-	if !p.IsMeta() {
-		panic("not meta page")
-	}
-	return (*Meta)(unsafe.Pointer(&p.Data))
+	freelist *Freelist
 }
 
 // Open returns (DB, succeed)
@@ -96,38 +72,39 @@ func Open(opts Options) (*DB, bool) {
 		}
 	}
 	// Open DB file
-	db.file, err = os.OpenFile(db.path, os.O_CREATE, 0644)
+	db.file, err = os.OpenFile(db.path, os.O_RDWR, 0644)
 	if err != nil {
 		fmt.Printf("Failed to open DB file: %v\n", err)
 		return nil, false
 	}
 	// Read DB file
-	buf := make([]byte, 2*page.PageSize)
+	buf := make([]byte, 2*PageSize)
 	_, err = db.file.Read(buf)
 	if err != nil {
 		fmt.Printf("Failed to read DB file: %v\n", err)
 		return nil, false
 	}
 	// Load meta info
-	mt := pageMeta(page.FromBuffer(buf, 0))
-	if mt.magic != Magic {
+	metaPage := FromBuffer(buf, 0)
+	dbMeta := metaPage.GetDBMeta()
+	if dbMeta.magic != Magic {
 		fmt.Println("magic not match")
 		return nil, false
 	}
-	db.meta = mt
+	db.meta = dbMeta
 	// Start mmap
-	ok := db.mmap(common.MmapMinSize)
+	ok := db.mmap(MinMapBytes)
 	if !ok {
 		fmt.Println("failed to mmap")
 		return nil, false
 	}
 	// Load freelist
-	db.freelist = freelist.NewFreelist()
+	db.freelist = NewFreelist()
 	pgFreelist := db.getPage(db.meta.freelistPage)
 	db.freelist.ReadPage(pgFreelist)
 	// Init single page pool
 	db.singlePages = sync.Pool{
-		New: func() interface{} { return make([]byte, page.PageSize) },
+		New: func() interface{} { return make([]byte, PageSize) },
 	}
 
 	return db, true
@@ -142,11 +119,11 @@ func (db *DB) initFile() bool {
 	}
 	db.file = fd
 
-	buf := make([]byte, 3*page.PageSize)
+	buf := make([]byte, 3*PageSize)
 	// First page is meta page
-	p0 := page.FromBuffer(buf, 0)
+	p0 := FromBuffer(buf, 0)
 	p0.Index = 0
-	p0.SetFlag(page.FlagMeta)
+	p0.SetFlag(FlagMeta)
 	p0.Overflow = 0
 
 	mt := pageMeta(p0)
@@ -156,14 +133,14 @@ func (db *DB) initFile() bool {
 	mt.totalPages = 3
 
 	// Second page is for freelist
-	p1 := page.FromBuffer(buf, 1)
+	p1 := FromBuffer(buf, 1)
 	p1.Index = 1
-	p1.SetFlag(page.FlagFreelist)
+	p1.SetFlag(FlagFreelist)
 
 	// Third page is for root node
-	p2 := page.FromBuffer(buf, 2)
+	p2 := FromBuffer(buf, 2)
 	p2.Index = 2
-	p2.SetFlag(page.FlagLeaf)
+	p2.SetFlag(FlagLeaf)
 
 	// Write and sync
 	_, err = db.file.WriteAt(buf, 0)
@@ -181,31 +158,27 @@ func (db *DB) initFile() bool {
 }
 
 // allocate allocates contiguous pages, returns (*page, succeed).
-func (db *DB) allocate(count int) (*page.Page, bool) {
-	// Allocate memory buffer to hold new page
+func (db *DB) allocate(count int) (*page, bool) {
+	// Always allocate memory buffer for new page
 	var buf []byte
 	if count == 1 {
 		buf = db.singlePages.Get().([]byte)
 	} else {
-		buf = make([]byte, count*page.PageSize)
+		buf = make([]byte, count*PageSize)
 	}
-	// New page struct
-	p := page.FromBuffer(buf, 0)
+	p := FromBuffer(buf, 0)
 	p.Overflow = count - 1
-
-	// Check freelist for memory-map free slot
+	// Check if new page can be mapped into slot in freelist
 	id, ok := db.freelist.Allocate(count)
 	if ok {
 		p.Index = id
 		return p, true
 	}
-
-	// When no proper "hole", enlarge memory mapping
+	// No such slot, can map to headroom or need to enlarge mmap
 	p.Index = db.wtx.meta.totalPages
-	db.wtx.meta.totalPages += common.Pgid(count)
-	mmapSize := int(db.wtx.meta.totalPages * common.Pgid(page.PageSize))
-
-	// Enlarge mmap
+	db.wtx.meta.totalPages += pgid(count)
+	mmapSize := int(db.wtx.meta.totalPages) * PageSize
+	// Check if need to enlarge mmap
 	if mmapSize > db.mmapSize {
 		ok := db.mmap(mmapSize)
 		if !ok {
@@ -233,9 +206,9 @@ func roundMmapSize(size int) int {
 	size += MmapStep
 	size -= size % MmapStep
 
-	if size > common.MmapMaxSize {
+	if size > MaxMapBytes {
 		fmt.Println("Exceed max mmap size, round up")
-		size = common.MmapMaxSize
+		size = MaxMapBytes
 	}
 
 	return size
@@ -273,16 +246,16 @@ func (db *DB) mmap(sz int) bool {
 
 	db.mmBuf = &buf
 	// buf is []byte slice, so &buf != &buf[0]
-	db.mmSizedBuf = (*[common.MmapMaxSize]byte)(unsafe.Pointer(&buf[0]))
+	db.mmSizedBuf = (*[MaxMapBytes]byte)(unsafe.Pointer(&buf[0]))
 	db.mmapSize = sz
-	page0 := page.FromBuffer(*db.mmBuf, 0)
+	page0 := FromBuffer(*db.mmBuf, 0)
 	db.meta = pageMeta(page0)
 
 	return true
 }
 
-// getPage returns page from memory map
-func (db *DB) getPage(index common.Pgid) *page.Page {
-	offset := index * common.Pgid(page.PageSize)
-	return (*page.Page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
+// getPage returns immutable page from memory map.
+func (db *DB) getPage(index pgid) *Page {
+	offset := index * pgid(PageSize)
+	return (*Page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
 }

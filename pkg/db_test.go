@@ -1,13 +1,13 @@
-package db
+package mk
 
 import (
+	"bytes"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/daicang/mk/pkg/common"
-	"github.com/daicang/mk/pkg/page"
+	"github.com/daicang/mk/pkg/test"
 )
 
 func TestCreateNew(t *testing.T) {
@@ -25,7 +25,7 @@ func TestCreateNew(t *testing.T) {
 		t.Fatalf("Failed to create new DB")
 	}
 
-	buf := make([]byte, 3*page.PageSize)
+	buf := make([]byte, 3*PageSize)
 	fd, _ := os.OpenFile(db.path, os.O_RDONLY, 0644)
 	_, err = fd.Read(buf)
 	if err != nil {
@@ -33,9 +33,9 @@ func TestCreateNew(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		p := page.FromBuffer(buf, common.Pgid(i))
+		p := FromBuffer(buf, pgid(i))
 
-		if p.Index != common.Pgid(i) {
+		if p.Index != pgid(i) {
 			t.Fatalf("Incorrect page id: expect %d get %d", i, p.Index)
 		}
 		switch i {
@@ -77,35 +77,51 @@ func TestOpen(t *testing.T) {
 	}
 }
 
-// func TestWriteTx(t *testing.T) {
-// 	testingDir, err := ioutil.TempDir("", "testing_data")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create testing dir")
-// 	}
-// 	defer os.Remove(testingDir)
+func TestWriteTx(t *testing.T) {
+	testingDir, err := ioutil.TempDir("", "testing_data")
+	if err != nil {
+		t.Fatalf("Failed to create testing dir")
+	}
+	defer os.Remove(testingDir)
 
-// 	opt := Options{
-// 		Path: filepath.Join(testingDir, "db"),
-// 	}
-// 	db, ok := Open(opt)
-// 	if !ok {
-// 		t.Fatal("Failed to open DB")
-// 	}
-// 	tx, ok := NewWritable(db)
-// 	if !ok {
-// 		t.Fatal("Failed to create tx")
-// 	}
+	opt := Options{
+		Path: filepath.Join(testingDir, "db"),
+	}
+	db, ok := Open(opt)
+	if !ok {
+		t.Fatal("Failed to open DB")
+	}
+	tx, ok := NewWritable(db)
+	if !ok {
+		t.Fatal("Failed to create tx")
+	}
 
-// 	kvs := testutil.RandomKV(1000)
-// 	for key, value := range kvs {
-// 		found, old := tx.Set([]byte(key), []byte(value))
-// 		if found {
-// 			t.Fatalf("Found should be false: old=%s", old)
-// 		}
-// 	}
+	kvs := test.RandomKV(1)
+	for key, value := range kvs {
+		found, old := tx.Set([]byte(key), []byte(value))
+		if found {
+			t.Fatalf("Found should be false: old=%s", old)
+		}
+	}
 
-// 	ok = tx.Commit()
-// 	if !ok {
-// 		t.Fatalf("Failed to commit")
-// 	}
-// }
+	ok = tx.Commit()
+	if !ok {
+		t.Fatalf("Failed to commit")
+	}
+
+	tx, ok = NewReadOnlyTx(db)
+	if !ok {
+		t.Fatal("Failed to create read-only tx")
+	}
+
+	for key, value := range kvs {
+		found, getValue := tx.Get([]byte(key))
+		if !found {
+			t.Fatalf("Cannot get key %s", string(key))
+		}
+
+		if !bytes.Equal(getValue, []byte(value)) {
+			t.Fatalf("Expected value %s, get %s", value, getValue)
+		}
+	}
+}

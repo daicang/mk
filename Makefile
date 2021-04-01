@@ -3,3 +3,6 @@ lint:
 
 test:
 	go test -cover -v ./...
+
+test-db:
+	go test -v ./pkg/db
