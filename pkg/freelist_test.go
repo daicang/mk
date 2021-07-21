@@ -6,9 +6,9 @@ import (
 )
 
 func TestMerge(t *testing.T) {
-	a := pgids{1, 2, 3}
-	b := pgids{}
-	expect := pgids{1, 2, 3}
+	a := ints{1, 2, 3}
+	b := ints{}
+	expect := ints{1, 2, 3}
 	result := merge(a, b)
 
 	if !reflect.DeepEqual(result, expect) {
@@ -20,17 +20,17 @@ func TestMerge(t *testing.T) {
 		t.Errorf("expect %v get %v", expect, result)
 	}
 
-	a = pgids{1, 2, 3}
-	b = pgids{4, 5}
-	expect = pgids{1, 2, 3, 4, 5}
+	a = ints{1, 2, 3}
+	b = ints{4, 5}
+	expect = ints{1, 2, 3, 4, 5}
 	result = merge(b, a)
 	if !reflect.DeepEqual(result, expect) {
 		t.Errorf("expect %v get %v", expect, result)
 	}
 
-	a = pgids{1, 3, 5, 7, 9}
-	b = pgids{2, 4, 6, 8, 10, 11, 12}
-	expect = pgids{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	a = ints{1, 3, 5, 7, 9}
+	b = ints{2, 4, 6, 8, 10, 11, 12}
+	expect = ints{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	result = merge(b, a)
 	if !reflect.DeepEqual(result, expect) {
 		t.Errorf("expect %v get %v", expect, result)
@@ -39,32 +39,32 @@ func TestMerge(t *testing.T) {
 
 func TestAllocate(t *testing.T) {
 	f := Freelist{
-		ids: pgids{},
+		ids: ints{},
 	}
 	_, success := f.Allocate(1)
 	if success {
 		t.Errorf("allocate empty freelist should fail")
 	}
 
-	f.ids = pgids{1, 3, 4, 5, 6, 7}
+	f.ids = ints{1, 3, 4, 5, 6, 7}
 	pid, success := f.Allocate(1)
 	if !success || pid != 1 {
 		t.Errorf("allocate failed: success %v, pid %v", success, pid)
 	}
-	if !reflect.DeepEqual(f.ids, pgids{3, 4, 5, 6, 7}) {
+	if !reflect.DeepEqual(f.ids, ints{3, 4, 5, 6, 7}) {
 		t.Errorf("incorrect ids: %v", f.ids)
 	}
 
-	f.ids = pgids{1, 3, 5, 6, 7}
+	f.ids = ints{1, 3, 5, 6, 7}
 	pid, success = f.Allocate(2)
 	if !success || pid != 5 {
 		t.Errorf("allocate failed: success %v, pid %v", success, pid)
 	}
-	if !reflect.DeepEqual(f.ids, pgids{1, 3, 7}) {
+	if !reflect.DeepEqual(f.ids, ints{1, 3, 7}) {
 		t.Errorf("incorrect ids: %v", f.ids)
 	}
 
-	f.ids = pgids{1, 3, 5, 6, 8}
+	f.ids = ints{1, 3, 5, 6, 8}
 	_, success = f.Allocate(3)
 	if success {
 		t.Errorf("allocate should fail")
@@ -76,7 +76,7 @@ func TestReadWrite(t *testing.T) {
 	size := 200
 
 	for i := 0; i < size; i++ {
-		f.ids = append(f.ids, pgid(i))
+		f.ids = append(f.ids, int(i))
 	}
 
 	buf := make([]byte, f.Size())

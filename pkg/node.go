@@ -30,23 +30,27 @@ type NodeInterface interface {
 
 	ReadPage(PageInterface)
 	WritePage(PageInterface)
+	Dereference()
 
 	IsRoot() bool
 	GetRoot() NodeInterface
 
 	PersistencySize() int
 
-	Search([]byte) (bool, int)
+	Search(key []byte) (bool, int)
 
-	Split()
-	Merge()
+	InsertKeyValueAt(i int, key, value []byte)
+	InsertKeyChildAt(i int, key []byte, cid int)
+
+	// Split()
+	// Merge()
 }
 
 // Node implements NodeInterface as B+tree node.
 type Node struct {
 	// id is page map index.
 	// index=0 marks node as not mapped to page.
-	id pgid
+	id int
 	// isLeaf marks leaf nodes.
 	isLeaf bool
 	// balanced node can skip merge.
@@ -64,8 +68,12 @@ type Node struct {
 	// values for leaf node.
 	// empty for internal nodes.
 	values [][]byte
-	// cids holds children pgids.
-	cids []pgid
+	// cids holds children ints.
+	cids []int
+}
+
+func NewNode() NodeInterface {
+	return &Node{}
 }
 
 // String returns string representation of node.
@@ -78,7 +86,7 @@ func (n Node) String() string {
 }
 
 // GetRoot returns root node from current node.
-func (n *Node) GetRoot() *Node {
+func (n *Node) GetRoot() NodeInterface {
 	r := n
 	for !n.IsRoot() {
 		r = r.parent
@@ -93,8 +101,8 @@ func (n *Node) IsRoot() bool {
 
 // ReadPage initiate a node from page.
 func (n *Node) ReadPage(p PageInterface) {
-	n.id = p.GetPgid()
-	n.isLeaf = p.isLeaf()
+	n.id = p.Getint()
+	n.isLeaf = p.IsLeaf()
 
 	for i := 0; i < p.GetKeyCount(); i++ {
 		n.keys = append(n.keys, p.GetKeyAt(i))
@@ -133,6 +141,22 @@ func (n *Node) WritePage(p PageInterface) {
 	}
 }
 
+// Dereference moves key and value to heap.
+func (n *Node) Dereference() {
+	for i, key := range n.keys {
+		buf := make([]byte, len(key))
+		copy(buf, key)
+		n.keys[i] = buf
+	}
+	if n.isLeaf {
+		for i, val := range n.values {
+			buf := make([]byte, len(val))
+			copy(buf, val)
+			n.values[i] = buf
+		}
+	}
+}
+
 // Search searches key in index,
 // When found, return [true, index]
 // When not found, return [false, first-greater-index]
@@ -165,8 +189,8 @@ func (n *Node) InsertKeyValueAt(i int, key, value []byte) {
 	n.values[i] = value
 }
 
-// InsertKeyChildAt inserts key/pgid into internal node.
-func (n *Node) InsertKeyChildAt(i int, key []byte, cid pgid) {
+// InsertKeyChildAt inserts key/int into internal node.
+func (n *Node) InsertKeyChildAt(i int, key []byte, cid int) {
 	if n.isLeaf {
 		panic("Internal-only operation")
 	}
@@ -201,14 +225,14 @@ func (n *Node) SetValueAt(i int, v []byte) {
 	n.values[i] = v
 }
 
-func (n *Node) GetChildID(i int) pgid {
+func (n *Node) GetChildID(i int) int {
 	if n.isLeaf {
 		panic("get child at leaf node")
 	}
 	return n.cids[i]
 }
 
-func (n *Node) SetChildID(i int, cid pgid) {
+func (n *Node) SetChildID(i int, cid int) {
 	if n.isLeaf {
 		panic("set child at leaf node")
 	}
@@ -237,7 +261,7 @@ func (n *Node) RemoveKeyValueAt(i int) ([]byte, []byte) {
 }
 
 // RemoveKeyChildAt removes key/child at given index.
-func (n *Node) RemoveKeyChildAt(i int) ([]byte, pgid) {
+func (n *Node) RemoveKeyChildAt(i int) ([]byte, int) {
 	if n.isLeaf {
 		panic("Internal-node-only operation")
 	}
@@ -331,7 +355,7 @@ func (n *Node) splitTwo() *Node {
 	if n.IsRoot() {
 		n.Parent = &Node{
 			Keys: []Key{n.Key},
-			Cids: []pgid{n.Index},
+			Cids: []int{n.Index},
 		}
 	}
 	next := Node{
@@ -350,24 +374,4 @@ func (n *Node) splitTwo() *Node {
 	}
 
 	return &next
-}
-
-// Dereference moves key and value to heap.
-func (n *Node) Dereference() {
-	buf := make(Key, len(n.Key))
-	copy(buf, n.Key)
-	n.Key = buf
-
-	for i, key := range n.keys {
-		buf := make(Key, len(key))
-		copy(buf, key)
-		n.keys[i] = buf
-	}
-	if n.isLeaf {
-		for i, val := range n.values {
-			buf := make(Value, len(val))
-			copy(buf, val)
-			n.values[i] = buf
-		}
-	}
 }

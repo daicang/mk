@@ -17,11 +17,11 @@ type Tx struct {
 	// Pointer to mata struct
 	meta *DBMeta
 	// root points to the b+tree root
-	root *NodeInterface
+	root NodeInterface
 	// All accessed nodes in this transaction.
-	nodes map[pgid]*NodeInterface
+	nodes map[int]NodeInterface
 	// Dirty pages in this tx, nil for read-only tx.
-	dirtyPages map[pgid]*PageInterface
+	dirtyPages map[int]PageInterface
 }
 
 // NewWritable creates new writable transaction.
@@ -36,16 +36,12 @@ func NewWritable(db *DB) (*Tx, bool) {
 		id:         db.lastTxID,
 		writable:   true,
 		meta:       db.meta.copy(),
-		nodes:      map[pgid]*Node{},
-		dirtyPages: map[pgid]*Page{},
+		nodes:      map[int]NodeInterface{},
+		dirtyPages: map[int]PageInterface{},
 	}
 
 	rootPage := db.getPage(db.meta.rootPage)
-	tx.root = &Node{
-		Parent: nil,
-	}
-	// fmt.Printf("rootid=%d\n", db.meta.rootPage)
-	// fmt.Printf("Page: %s\n", rootPage)
+	tx.root = NewNode()
 	tx.root.ReadPage(rootPage)
 	// fmt.Printf("Root: %s\n", root)
 	tx.nodes[db.meta.rootPage] = tx.root
@@ -64,13 +60,11 @@ func NewReadOnlyTx(db *DB) (*Tx, bool) {
 		id:         db.lastTxID,
 		writable:   false,
 		meta:       db.meta.copy(),
-		nodes:      map[pgid]*Node{},
+		nodes:      map[int]NodeInterface{},
 		dirtyPages: nil,
 	}
 	rootPage := db.getPage(db.meta.rootPage)
-	tx.root = &Node{
-		Parent: nil,
-	}
+	tx.root = NewNode()
 	tx.root.ReadPage(rootPage)
 	tx.nodes[db.meta.rootPage] = tx.root
 
@@ -80,7 +74,7 @@ func NewReadOnlyTx(db *DB) (*Tx, bool) {
 }
 
 // allocate allocates contiguous pages.
-func (tx *Tx) allocate(count int) (*Page, bool) {
+func (tx *Tx) allocate(count int) (PageInterface, bool) {
 	if !tx.writable {
 		panic("Read only tx can't allocate")
 	}
@@ -190,8 +184,8 @@ func (tx *Tx) rollback() {
 	tx.close()
 }
 
-// getPage returns page from pgid.
-func (tx *Tx) getPage(id pgid) *Page {
+// getPage returns page from int.
+func (tx *Tx) getPage(id int) *Page {
 	p, exist := tx.dirtyPages[id]
 	if exist {
 		return p
@@ -199,8 +193,8 @@ func (tx *Tx) getPage(id pgid) *Page {
 	return tx.db.getPage(id)
 }
 
-// getNode returns node from pgid.
-func (tx *Tx) getNode(id pgid, parent *Node) *Node {
+// getNode returns node from int.
+func (tx *Tx) getNode(id int, parent *Node) *Node {
 	n, exist := tx.nodes[id]
 	if exist {
 		return n

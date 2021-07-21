@@ -1,8 +1,5 @@
 package mk
 
-// pgid is memory map page ID
-type pgid uint32
-
 const (
 	// Initial memory map size is 128KB.
 	MinMapBytes = 1 << 17
@@ -11,6 +8,7 @@ const (
 	// Go max integer is 2^63-1 on darwin/amd64
 	// This should be sufficient to hold key/value
 	// size and offset
+	// Also integer should be big enough to hold a page ID
 )
 
 const (

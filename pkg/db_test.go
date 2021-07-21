@@ -33,9 +33,9 @@ func TestCreateNew(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		p := FromBuffer(buf, pgid(i))
+		p := FromBuffer(buf, int(i))
 
-		if p.Index != pgid(i) {
+		if p.Index != int(i) {
 			t.Fatalf("Incorrect page id: expect %d get %d", i, p.Index)
 		}
 		switch i {
@@ -48,7 +48,7 @@ func TestCreateNew(t *testing.T) {
 				t.Fatalf("Meta page magic value error")
 			}
 			if mt.rootPage != 2 {
-				t.Fatalf("Meta page root pgid error")
+				t.Fatalf("Meta page root int error")
 			}
 		case 1:
 			if !p.IsFreelist() {

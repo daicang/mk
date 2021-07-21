@@ -36,11 +36,11 @@ type DBMeta struct {
 	magic uint32
 	// number of allocated pages, also id of next new page
 	// in headroom
-	totalPages pgid
+	totalPages int
 	// page id of first freelist page
-	freelistPage pgid
+	freelistPage int
 	// page id of root page
-	rootPage pgid
+	rootPage int
 }
 
 type PageInterface interface {
@@ -55,19 +55,19 @@ type PageInterface interface {
 
 	GetKeyCount() int
 	GetChildCount() int
-	GetPgid() pgid
+	Getint() int
 
 	GetKeyAt(int) []byte
 	GetValueAt(int) []byte
-	GetChildIDAt(int) pgid
+	GetChildIDAt(int) int
 
 	CalcSize(int, int) int
 
 	SetKeyCount(int)
 	SetFlag(uint16)
 
-	WriteKeyValueAt(int, int, []byte, []byte)
-	WriteKeyChildAt(int, int, []byte, pgid)
+	WriteKeyValueAt(i, keyOffset int, key, value []byte)
+	WriteKeyChildAt(i, keyOffset int, key []byte, cid int)
 }
 
 // Page implements PageInterface
@@ -85,11 +85,18 @@ type PageHeader struct {
 	keyCount int
 	// mmap index
 	// starting page (index 0) should never be freed
-	index pgid
+	index int
 	// type mark
 	flag uint16
 	// starting point of metadata.
 	anchor uintptr
+}
+
+// PageFromBuffer returns page with given index in a buffer.
+// Go slices are metadata to underlying structure, but
+// arrays are values. So never pass arrays.
+func PageFromBuffer(buf []byte, i int) PageInterface {
+	return (*PageHeader)(unsafe.Pointer(&buf[i*int(PageSize)]))
 }
 
 type kvMeta struct {
@@ -98,7 +105,7 @@ type kvMeta struct {
 	keySize   int
 	valueSize int
 	// child page id
-	cid pgid
+	cid int
 }
 
 // String returns string for print.
@@ -127,7 +134,7 @@ func (p *PageHeader) GetChildCount() int {
 	return p.keyCount + 1
 }
 
-func (p *PageHeader) GetPgid() pgid {
+func (p *PageHeader) Getint() int {
 	return p.index
 }
 
@@ -157,7 +164,7 @@ func (p *PageHeader) GetValueAt(i int) []byte {
 	return buf[begin:end]
 }
 
-func (p *PageHeader) GetChildIDAt(i int) pgid {
+func (p *PageHeader) GetChildIDAt(i int) int {
 	if p.IsLeaf() {
 		panic("not internal page")
 	}
@@ -182,7 +189,7 @@ func (p *PageHeader) WriteKeyValueAt(i, keyOffset int, key, value []byte) {
 }
 
 // The last key shoud be empty since it's for internal page.
-func (p *PageHeader) WriteKeyChildAt(i, keyOffset int, key []byte, cid pgid) {
+func (p *PageHeader) WriteKeyChildAt(i, keyOffset int, key []byte, cid int) {
 	km := (*[MaxKeys]kvMeta)(unsafe.Pointer(&p.anchor))[i]
 	km.keySize = len(key)
 	km.cid = cid
@@ -227,11 +234,4 @@ func (p PageHeader) getType() string {
 		return "leaf"
 	}
 	panic("Unknown page type")
-}
-
-// FromBuffer returns page with given index in a buffer.
-// Go slices are metadata to underlying structure, but
-// arrays are values. So never pass arrays.
-func FromBuffer(buf []byte, i pgid) PageInterface {
-	return (*PageHeader)(unsafe.Pointer(&buf[i*pgid(PageSize)]))
 }

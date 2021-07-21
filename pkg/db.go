@@ -176,7 +176,7 @@ func (db *DB) allocate(count int) (*page, bool) {
 	}
 	// No such slot, can map to headroom or need to enlarge mmap
 	p.Index = db.wtx.meta.totalPages
-	db.wtx.meta.totalPages += pgid(count)
+	db.wtx.meta.totalPages += int(count)
 	mmapSize := int(db.wtx.meta.totalPages) * PageSize
 	// Check if need to enlarge mmap
 	if mmapSize > db.mmapSize {
@@ -255,7 +255,7 @@ func (db *DB) mmap(sz int) bool {
 }
 
 // getPage returns immutable page from memory map.
-func (db *DB) getPage(index pgid) *Page {
-	offset := index * pgid(PageSize)
+func (db *DB) getPage(index int) *Page {
+	offset := index * int(PageSize)
 	return (*Page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
 }
