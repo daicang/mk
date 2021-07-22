@@ -52,16 +52,18 @@ type PageInterface interface {
 	IsInternal() bool
 
 	GetDBMeta() *DBMeta
+	GetBuffer() []byte
 
+	GetPageCount() int
 	GetKeyCount() int
 	GetChildCount() int
-	Getint() int
+
+	GetIndex() int
+	Size() int
 
 	GetKeyAt(int) []byte
 	GetValueAt(int) []byte
 	GetChildIDAt(int) int
-
-	CalcSize(int, int) int
 
 	SetKeyCount(int)
 	SetFlag(uint16)
@@ -71,15 +73,12 @@ type PageInterface interface {
 }
 
 // Page implements PageInterface
-// Leaf page layout:
-// pageHeader | [count]kvMeta | <key data> | <value data>
-//
-// Internal page layout:
-// pageHeader | [count]kvMeta | <key data>
+// Page layout:
+// pageHeader | [count]kvMeta | <key data> | <value data> (empty for internal page)
 // Count = len(value) = len(key)+1, last meta key info is empty
 type PageHeader struct {
-	// overflow counter, 0 for single page
-	overflow int
+	// page counter
+	pageCount int
 	// key count, childCount = keyCount + 1 for internal page
 	// childCount = keyCount for leaf page
 	keyCount int
@@ -111,16 +110,28 @@ type kvMeta struct {
 // String returns string for print.
 func (p PageHeader) String() string {
 	return fmt.Sprintf(
-		"page[%d] %s keys=%d, overflow=%d",
+		"page[%d] %s keys=%d, pages=%d",
 		p.index,
 		p.getType(),
 		p.keyCount,
-		p.overflow,
+		p.pageCount,
 	)
+}
+
+func (p *PageHeader) GetBuffer() []byte {
+	return (*(*[MaxMapBytes]byte)(unsafe.Pointer(p)))[:p.Size()]
+}
+
+func (p *PageHeader) Size() int {
+	return p.pageCount * PageSize
 }
 
 func (p *PageHeader) SetKeyCount(count int) {
 	p.keyCount = count
+}
+
+func (p *PageHeader) GetPageCount() int {
+	return p.pageCount
 }
 
 func (p *PageHeader) GetKeyCount() int {
@@ -134,7 +145,7 @@ func (p *PageHeader) GetChildCount() int {
 	return p.keyCount + 1
 }
 
-func (p *PageHeader) Getint() int {
+func (p *PageHeader) GetIndex() int {
 	return p.index
 }
 
@@ -170,10 +181,6 @@ func (p *PageHeader) GetChildIDAt(i int) int {
 	}
 	meta := (*[MaxKeys]kvMeta)(unsafe.Pointer(&p.anchor))[i]
 	return meta.cid
-}
-
-func (p *PageHeader) CalcSize(slotCount int, dataSize int) int {
-	return HeaderSize + KvMetaSize*slotCount + dataSize
 }
 
 // header | [count]kvMeta | key | value | key | value | ..

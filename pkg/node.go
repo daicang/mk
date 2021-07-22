@@ -17,11 +17,9 @@ const (
 )
 
 var (
-	splitPagePercent = 0.5
-	underfillPercent = 0.25
-
-	splitThreshold     = int(float64(PageSize) * splitPagePercent)
-	underfillThreshold = int(float64(PageSize) * underfillPercent)
+	// splitSize is node split threshold
+	splitSize          = PageSize / 2
+	underfillThreshold = PageSize / 4
 )
 
 // NodeInterface represents b+tree node
@@ -33,6 +31,9 @@ type NodeInterface interface {
 	Dereference()
 
 	IsRoot() bool
+	IsLeaf() bool
+	IsBalanced() bool
+
 	GetRoot() NodeInterface
 
 	PersistencySize() int
@@ -42,7 +43,7 @@ type NodeInterface interface {
 	InsertKeyValueAt(i int, key, value []byte)
 	InsertKeyChildAt(i int, key []byte, cid int)
 
-	// Split()
+	Split() []NodeInterface
 	// Merge()
 }
 
@@ -60,15 +61,11 @@ type Node struct {
 	spilled bool
 	// parent pointer.
 	parent *Node
-	// keys in this node.
+	// keys, or indexes for internal nodes.
 	keys [][]byte
-	// child pointers
-	// empty for leaf nodes
-	children []*Node
 	// values for leaf node.
-	// empty for internal nodes.
 	values [][]byte
-	// cids holds children ints.
+	// child pgids.
 	cids []int
 }
 
@@ -94,14 +91,28 @@ func (n *Node) GetRoot() NodeInterface {
 	return r
 }
 
-// IsRoot returns whether it is root node.
+func (n *Node) IsBalanced() bool {
+	return n.balanced
+}
+
+func (n *Node) IsLeaf() bool {
+	return n.isLeaf
+}
+
 func (n *Node) IsRoot() bool {
 	return n.parent == nil
 }
 
+func (n *Node) getChildCount() int {
+	if n.isLeaf {
+		return 0
+	}
+	return len(n.cids)
+}
+
 // ReadPage initiate a node from page.
 func (n *Node) ReadPage(p PageInterface) {
-	n.id = p.Getint()
+	n.id = p.GetIndex()
 	n.isLeaf = p.IsLeaf()
 
 	for i := 0; i < p.GetKeyCount(); i++ {
@@ -176,9 +187,6 @@ func (n *Node) InsertKeyValueAt(i int, key, value []byte) {
 	if !n.isLeaf {
 		panic("Leaf-only operation")
 	}
-	if i > n.KeyCount() {
-		panic("Index out of bound")
-	}
 
 	n.keys = append(n.keys, []byte{})
 	copy(n.keys[i+1:], n.keys[i:])
@@ -190,12 +198,10 @@ func (n *Node) InsertKeyValueAt(i int, key, value []byte) {
 }
 
 // InsertKeyChildAt inserts key/int into internal node.
+// TODO: internal node layout changed
 func (n *Node) InsertKeyChildAt(i int, key []byte, cid int) {
 	if n.isLeaf {
 		panic("Internal-only operation")
-	}
-	if i > n.KeyCount() {
-		panic("Index out of bound")
 	}
 
 	n.keys = append(n.keys, []byte{})
@@ -244,9 +250,6 @@ func (n *Node) RemoveKeyValueAt(i int) ([]byte, []byte) {
 	if !n.isLeaf {
 		panic("Leaf-only operation")
 	}
-	if i >= len(n.values) {
-		panic("Invalid index")
-	}
 
 	removedKey := n.keys[i]
 	removedValue := n.values[i]
@@ -265,9 +268,6 @@ func (n *Node) RemoveKeyChildAt(i int) ([]byte, int) {
 	if n.isLeaf {
 		panic("Internal-node-only operation")
 	}
-	if i >= len(n.cids) {
-		panic("Index out of bound")
-	}
 
 	removedKey := n.keys[i]
 	removedChild := n.cids[i]
@@ -281,8 +281,8 @@ func (n *Node) RemoveKeyChildAt(i int) ([]byte, int) {
 	return removedKey, removedChild
 }
 
-// PersistenncySize returns required size to write to memory page.
-func (n *Node) PersistencySize() int {
+// size returns size to write to page buffer.
+func (n *Node) size() int {
 	dataSize := 0
 	for i := range n.keys {
 		dataSize += len(n.keys[i])
@@ -290,7 +290,7 @@ func (n *Node) PersistencySize() int {
 			dataSize += len(n.values[i])
 		}
 	}
-	return
+	return HeaderSize + KvMetaSize*n.KeyCount() + dataSize
 }
 
 func (n *Node) KeyCount() int {
@@ -301,7 +301,7 @@ func (n *Node) KeyCount() int {
 // and keys.
 // split sets Parent for new node, but not update for parent-side,
 // and not allocate page for new node.
-func (n *Node) Split() []*Node {
+func (n *Node) Split() []NodeInterface {
 	nodes := []*Node{}
 	node := n
 	for {
@@ -318,25 +318,21 @@ func (n *Node) Split() []*Node {
 
 // Underfill returns whether node should be merged.
 func (n *Node) Underfill() bool {
-	return n.KeyCount() < minKeys || n.Size() < underfillThreshold
-}
-
-// Overfill returns node size > pageSize and key > maxKeys.
-func (n *Node) Overfill() bool {
-	return n.KeyCount() > maxKeys && n.Size() > PageSize
+	return n.KeyCount() < minKeys || n.size() <= underfillThreshold
 }
 
 func isSplitPoint(i, size int) bool {
-	return i >= minKeys && size >= splitThreshold
+	return i >= minKeys && size >= splitSize
 }
 
 // splitTwo splits overfilled nodes, will not
 // update new node to Parent node, will not
 // allocate page for new node.
 func (n *Node) splitTwo() *Node {
-	if !n.Overfill() {
+	if n.KeyCount() <= MaxKeys || n.size() <= PageSize {
 		return nil
 	}
+
 	size := HeaderSize
 	splitIndex := 0
 	// Search split point
@@ -374,4 +370,84 @@ func (n *Node) splitTwo() *Node {
 	}
 
 	return &next
+}
+
+// Merge merges underfilled nodes with sibliings.
+// Merge runs bottom-up
+func (n *Node) Merge() {
+	if n.balanced {
+		return
+	}
+	n.balanced = true
+
+	if !n.Underfill() {
+		return
+	}
+
+	if n.IsRoot() {
+		if n.getChildCount() == 1 {
+			// Merge with only child
+			child := tx.getChildAt(n, 0)
+
+			n.IsLeaf = child.IsLeaf
+			n.Keys = child.Keys
+			n.Values = child.Values
+			n.Cids = child.Cids
+			// Reparent grand children
+			for i := 0; i < n.KeyCount(); i++ {
+				tx.getChildAt(n, i).Parent = n
+			}
+			tx.freeNode(child)
+		}
+		return
+	}
+
+	if n.KeyCount() == 0 {
+		// Remove empty node, also remove inode from parent
+		// n.key could be different to Parent index key
+		_, i := n.Parent.Search(n.Key)
+		n.Parent.RemoveKeyChildAt(i)
+		tx.freeNode(n)
+		// check parent merge
+		tx.merge(n.Parent)
+		return
+	}
+
+	if n.Parent.KeyCount() < 2 {
+		panic("Parent should have at least one child")
+	}
+
+	var from *Node
+	var to *Node
+	var fromIdx int
+
+	if n.Index == n.Parent.Cids[0] {
+		// Leftmost node, merge right sibling with it
+		fromIdx = 1
+		from = tx.getChildAt(n.Parent, 1)
+		to = n
+	} else {
+		// merge current node with left sibling
+		_, i := n.Parent.Search(n.Key)
+		fromIdx = i
+		from = n
+		to = tx.getChildAt(n.Parent, i-1)
+	}
+
+	// Check node type
+	if from.IsLeaf != to.IsLeaf {
+		panic("Sibling nodes should have same type")
+	}
+	// Reparent from node child
+	for i := 0; i < from.KeyCount(); i++ {
+		tx.getChildAt(from, i).Parent = to
+	}
+
+	to.Keys = append(to.Keys, from.Keys...)
+	to.Values = append(to.Values, from.Values...)
+	to.Cids = append(to.Cids, from.Cids...)
+
+	n.Parent.RemoveKeyChildAt(fromIdx)
+	tx.freeNode(from)
+	tx.merge(n.Parent)
 }

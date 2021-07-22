@@ -3,7 +3,6 @@ package mk
 import (
 	"fmt"
 	"sort"
-	"unsafe"
 )
 
 // Tx represents transaction,
@@ -129,47 +128,35 @@ func (tx *Tx) Commit() bool {
 	return true
 }
 
-type Pages []*PageHeader
-
-func (pgs Pages) Len() int {
-	return len(pgs)
-}
-
-func (pgs Pages) Less(i, j int) bool {
-	return pgs[i].Index < pgs[j].Index
-}
-
-func (pgs Pages) Swap(i, j int) {
-	pgs[i], pgs[j] = pgs[j], pgs[i]
-}
-
 // write writes all pages hold by this transaction.
 func (tx *Tx) write() bool {
 	// Write pages to disk in order
-	pages := Pages{}
+	pages := []PageInterface{}
 	for _, p := range tx.dirtyPages {
 		pages = append(pages, p)
 	}
-	sort.Sort(pages)
+	sort.Slice(pages, func(i, j int) bool {
+		return pages[i].GetIndex() < pages[j].GetIndex()
+	})
 	for _, p := range pages {
-		pos := int64(p.Index) * int64(PageSize)
-		size := (p.Overflow + 1) * PageSize
-		buf := (*[MaxMapBytes]byte)(unsafe.Pointer(p))
-		_, err := tx.db.file.WriteAt(buf[:size], pos)
+		offset := p.GetIndex() * PageSize
+		buf := p.GetBuffer()
+
+		_, err := tx.db.file.WriteAt(buf, int64(offset))
 		if err != nil {
 			fmt.Printf("Failed to write page: %v\n", err)
 			return false
 		}
 	}
 
+	// Return single page buffer to pool
 	for _, p := range pages {
-		if p.Overflow == 0 {
-			// Return single pages to page pool
-			buf := (*[PageSize]byte)(unsafe.Pointer(p))
+		if p.GetPageCount() == 1 {
+			buf := p.GetBuffer()
 			for i := range buf {
 				buf[i] = 0
 			}
-			tx.db.singlePages.Put(buf) // nolint: staticcheck
+			tx.db.singlePages.Put(buf)
 		}
 	}
 
@@ -334,84 +321,84 @@ func (tx *Tx) spillNode(n *Node) bool {
 	return true
 }
 
-// merge merges underfilled nodes with sibliings.
-// merge runs bottom-up
-func (tx *Tx) merge(n *Node) {
-	if n.Balanced {
-		return
-	}
-	n.Balanced = true
-	if !n.Underfill() {
-		return
-	}
+// // merge merges underfilled nodes with sibliings.
+// // merge runs bottom-up
+// func (tx *Tx) merge(n *Node) {
+// 	if n.IsBalanced() {
+// 		return
+// 	}
+// 	n.Balanced = true
+// 	if !n.Underfill() {
+// 		return
+// 	}
 
-	if n.IsRoot() {
-		// When root has only one child, merge with it
-		if !n.IsLeaf && n.KeyCount() == 1 {
-			child := tx.getChildAt(n, 0)
+// 	if n.IsRoot() {
+// 		// When root has only one child, merge with it
+// 		if !n.IsLeaf && n.KeyCount() == 1 {
+// 			child := tx.getChildAt(n, 0)
 
-			n.IsLeaf = child.IsLeaf
-			n.Keys = child.Keys
-			n.Values = child.Values
-			n.Cids = child.Cids
-			// Reparent grand children
-			for i := 0; i < n.KeyCount(); i++ {
-				tx.getChildAt(n, i).Parent = n
-			}
-			tx.freeNode(child)
-		}
-		return
-	}
+// 			n.IsLeaf = child.IsLeaf
+// 			n.Keys = child.Keys
+// 			n.Values = child.Values
+// 			n.Cids = child.Cids
+// 			// Reparent grand children
+// 			for i := 0; i < n.KeyCount(); i++ {
+// 				tx.getChildAt(n, i).Parent = n
+// 			}
+// 			tx.freeNode(child)
+// 		}
+// 		return
+// 	}
 
-	if n.KeyCount() == 0 {
-		// Remove empty node, also remove inode from parent
-		// n.key could be different to Parent index key
-		_, i := n.Parent.Search(n.Key)
-		n.Parent.RemoveKeyChildAt(i)
-		tx.freeNode(n)
-		// check parent merge
-		tx.merge(n.Parent)
-		return
-	}
+// 	if n.KeyCount() == 0 {
+// 		// Remove empty node, also remove inode from parent
+// 		// n.key could be different to Parent index key
+// 		_, i := n.Parent.Search(n.Key)
+// 		n.Parent.RemoveKeyChildAt(i)
+// 		tx.freeNode(n)
+// 		// check parent merge
+// 		tx.merge(n.Parent)
+// 		return
+// 	}
 
-	if n.Parent.KeyCount() < 2 {
-		panic("Parent should have at least one child")
-	}
+// 	if n.Parent.KeyCount() < 2 {
+// 		panic("Parent should have at least one child")
+// 	}
 
-	var from *Node
-	var to *Node
-	var fromIdx int
+// 	var from *Node
+// 	var to *Node
+// 	var fromIdx int
 
-	if n.Index == n.Parent.Cids[0] {
-		// Leftmost node, merge right sibling with it
-		fromIdx = 1
-		from = tx.getChildAt(n.Parent, 1)
-		to = n
-	} else {
-		// merge current node with left sibling
-		_, i := n.Parent.Search(n.Key)
-		fromIdx = i
-		from = n
-		to = tx.getChildAt(n.Parent, i-1)
-	}
+// 	if n.Index == n.Parent.Cids[0] {
+// 		// Leftmost node, merge right sibling with it
+// 		fromIdx = 1
+// 		from = tx.getChildAt(n.Parent, 1)
+// 		to = n
+// 	} else {
+// 		// merge current node with left sibling
+// 		_, i := n.Parent.Search(n.Key)
+// 		fromIdx = i
+// 		from = n
+// 		to = tx.getChildAt(n.Parent, i-1)
+// 	}
 
-	// Check node type
-	if from.IsLeaf != to.IsLeaf {
-		panic("Sibling nodes should have same type")
-	}
-	// Reparent from node child
-	for i := 0; i < from.KeyCount(); i++ {
-		tx.getChildAt(from, i).Parent = to
-	}
+// 	// Check node type
+// 	if from.IsLeaf != to.IsLeaf {
+// 		panic("Sibling nodes should have same type")
+// 	}
+// 	// Reparent from node child
+// 	for i := 0; i < from.KeyCount(); i++ {
+// 		tx.getChildAt(from, i).Parent = to
+// 	}
 
-	to.Keys = append(to.Keys, from.Keys...)
-	to.Values = append(to.Values, from.Values...)
-	to.Cids = append(to.Cids, from.Cids...)
+// 	to.Keys = append(to.Keys, from.Keys...)
+// 	to.Values = append(to.Values, from.Values...)
+// 	to.Cids = append(to.Cids, from.Cids...)
 
-	n.Parent.RemoveKeyChildAt(fromIdx)
-	tx.freeNode(from)
-	tx.merge(n.Parent)
-}
+// 	n.Parent.RemoveKeyChildAt(fromIdx)
+// 	tx.freeNode(from)
+// 	tx.merge(n.Parent)
+// }
 
 // freeNode returns page to freelistx.
 func (tx *Tx) freeNode(n *Node) {
