@@ -321,8 +321,19 @@ func (n *Node) Underfill() bool {
 	return n.KeyCount() < minKeys || n.size() <= underfillThreshold
 }
 
-func isSplitPoint(i, size int) bool {
-	return i >= minKeys && size >= splitSize
+func (n *Node) getFirstSplitIndex() int {
+	size := HeaderSize
+	for i, key := range n.keys {
+		size += KvMetaSize
+		size += len(key)
+		if n.isLeaf {
+			size += len(n.values[i])
+		}
+		if i >= minKeys && size >= splitSize {
+			return i
+		}
+	}
+	panic("Failed to get split index")
 }
 
 // splitTwo splits overfilled nodes, will not
@@ -333,32 +344,12 @@ func (n *Node) splitTwo() *Node {
 		return nil
 	}
 
-	size := HeaderSize
-	splitIndex := 0
-	// Search split point
-	for i, key := range n.keys {
-		size += PairInfoSize
-		size += len(key)
-		if n.isLeaf {
-			size += len(n.values[i])
-		}
-		if isSplitPoint(i, size) {
-			splitIndex = i
-			break
-		}
-	}
-	// If it's root, prepare a new parent
-	if n.IsRoot() {
-		n.Parent = &Node{
-			Keys: []Key{n.Key},
-			Cids: []int{n.Index},
-		}
-	}
-	next := Node{
-		IsLeaf: n.isLeaf,
-		Parent: n.Parent,
-	}
-	// Split key, value, children
+	splitIndex := n.getFirstSplitIndex()
+	splitKey := n.keys[splitIndex]
+
+	next := &Node{}
+	next.isLeaf = n.isLeaf
+
 	next.keys = n.keys[splitIndex:]
 	n.keys = n.keys[:splitIndex]
 	if n.isLeaf {
@@ -369,7 +360,19 @@ func (n *Node) splitTwo() *Node {
 		n.cids = n.cids[:splitIndex]
 	}
 
-	return &next
+	if n.IsRoot() {
+		// Split root, create a new root
+		n.parent = &Node{}
+		n.parent.isLeaf = false
+		n.parent.keys = [][]byte{splitKey}
+		// TODO: add children array.
+		// Seems we have to trace new nodes from children array during split.
+		n.parent.cids = []int{n.id, 0}
+	}
+
+	next.parent = n.parent
+
+	return next
 }
 
 // Merge merges underfilled nodes with sibliings.
