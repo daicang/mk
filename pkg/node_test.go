@@ -1,25 +1,24 @@
-package tree
+package mk
 
 import (
 	"math"
 	"testing"
 
-	"github.com/daicang/mk/pkg/page"
-	"github.com/daicang/mk/pkg/testutil"
+	"github.com/daicang/mk/pkg/test"
 )
 
-func allocPage(size int) *page.Page {
-	count := int(math.Ceil(float64(size) / float64(page.PageSize)))
-	buf := make([]byte, count*page.PageSize)
-	p := page.FromBuffer(buf, 0)
+func allocPage(size int) *Page {
+	count := int(math.Ceil(float64(size) / float64(PageSize)))
+	buf := make([]byte, count*PageSize)
+	p := FromBuffer(buf, 0)
 	p.Overflow = count - 1
 
 	return p
 }
 
 // randomNode returns node filled with random KV.
-func randomNode(keys int) (map[string]string, *Node) {
-	kvs := testutil.RandomKV(keys)
+func randomNode(keys int) (*Node, map[string]string) {
+	kvs := test.RandomKV(keys)
 	n := Node{
 		IsLeaf: true,
 	}
@@ -28,7 +27,7 @@ func randomNode(keys int) (map[string]string, *Node) {
 		n.InsertKeyValueAt(i, []byte(key), []byte(value))
 	}
 
-	return kvs, &n
+	return &n, kvs
 }
 
 // GenNode generates node with option.
@@ -39,8 +38,8 @@ func GenNode(keys, keySize, valueSize int) *Node {
 
 	for i := 0; i < keys; i++ {
 		for {
-			key := testutil.RandomByteArray(keySize)
-			value := testutil.RandomByteArray(valueSize)
+			key := test.RandomByteArray(keySize)
+			value := test.RandomByteArray(valueSize)
 			found, j := n.Search(key)
 			if !found {
 				n.InsertKeyValueAt(j, key, value)
@@ -54,7 +53,7 @@ func GenNode(keys, keySize, valueSize int) *Node {
 
 func TestNodeWrite(t *testing.T) {
 	size := 500
-	kvs, n := randomNode(size)
+	n, kvs := randomNode(size)
 	p := allocPage(n.Size())
 
 	n.WritePage(p)
@@ -79,7 +78,7 @@ func TestNodeWrite(t *testing.T) {
 
 func TestNodeRead(t *testing.T) {
 	size := 500
-	kvs, n1 := randomNode(size)
+	n1, kvs := randomNode(size)
 	p := allocPage(n1.Size())
 	n1.WritePage(p)
 	n2 := &Node{}
@@ -107,7 +106,7 @@ func TestNodeRead(t *testing.T) {
 
 func TestNodeSearch(t *testing.T) {
 	size := 300
-	kvs, n := randomNode(size)
+	n, kvs := randomNode(size)
 
 	for key, value := range kvs {
 		exist, i := n.Search([]byte(key))
@@ -124,15 +123,43 @@ func TestNodeSearch(t *testing.T) {
 	}
 }
 
+func TestSplit1(t *testing.T) {
+	n, _ := randomNode(2)
+	nodes := n.Split()
+	if len(nodes) != 1 {
+		t.Fatalf("Split should return 1 node, get %d", len(nodes))
+	}
+}
+
+func TestSplit2(t *testing.T) {
+	keys := 64
+	kvSize := (2*PageSize-2*HeaderSize)/keys - PairInfoSize
+	keySize := kvSize / 2
+	valueSize := kvSize / 2
+
+	// Create a node with 2x page size
+	n := GenNode(keys, keySize, valueSize)
+	expectedSize := 2*PageSize - HeaderSize
+	if n.Size() != 2*PageSize {
+		t.Fatalf("Size should be %d, get %d", expectedSize, n.Size())
+	}
+
+	nodes := n.Split()
+
+	if len(nodes) != 2 {
+		t.Fatalf("Split should return 2 node, get %d", len(nodes))
+	}
+}
+
 func TestNodeSplitTwo(t *testing.T) {
-	_, n1 := randomNode(2)
+	n1, _ := randomNode(2)
 
 	if n1.splitTwo() != nil {
 		t.Errorf("Should not split node")
 	}
 
 	keyCount := 64
-	kvSize := (2*page.PageSize-page.HeaderSize)/keyCount - page.PairInfoSize
+	kvSize := (2*PageSize-HeaderSize)/keyCount - PairInfoSize
 	keySize := kvSize / 2
 	valueSize := kvSize / 2
 
@@ -148,7 +175,7 @@ func TestNodeSplitTwo(t *testing.T) {
 		t.Errorf("Should split two")
 	}
 
-	i := (splitThreshold - page.HeaderSize) / (page.PairInfoSize + kvSize)
+	i := (splitThreshold - HeaderSize) / (PairInfoSize + kvSize)
 
 	if n2.KeyCount() != i {
 		t.Errorf("Incorrect split point: expect %d, get %d", i, n2.KeyCount())

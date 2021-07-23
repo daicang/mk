@@ -1,31 +1,28 @@
-package freelist
+package mk
 
 import (
 	"sort"
 	"unsafe"
-
-	"github.com/daicang/mk/pkg/common"
-	"github.com/daicang/mk/pkg/page"
 )
 
 const (
 	maxFreeSlot = 1 << 34
 )
 
-type pgids []common.Pgid
+type ints []int
 
-func (p pgids) Len() int           { return len(p) }
-func (p pgids) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-func (p pgids) Less(i, j int) bool { return p[i] < p[j] }
+func (p ints) Len() int           { return len(p) }
+func (p ints) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+func (p ints) Less(i, j int) bool { return p[i] < p[j] }
 
-func merge(a, b pgids) pgids {
+func merge(a, b ints) ints {
 	if len(a) == 0 {
 		return b
 	}
 	if len(b) == 0 {
 		return a
 	}
-	merged := make(pgids, len(a)+len(b))
+	merged := make(ints, len(a)+len(b))
 	ia, ib := 0, 0
 	for ia < len(a) && ib < len(b) {
 		if a[ia] < b[ib] {
@@ -47,36 +44,36 @@ func merge(a, b pgids) pgids {
 
 // Freelist tracks unused page slots in mmap.
 type Freelist struct {
-	// free page ids
-	ids pgids
-	// pages to be freed by the end of transaction
-	txFreed pgids
+	// free slot ids
+	slots []int
+	// pages to freed by writable transaction
+	txFreed map[int][]int
 }
 
 // NewFreelist returns empty freelist.
 func NewFreelist() *Freelist {
 	return &Freelist{
-		ids:     []common.Pgid{},
-		txFreed: []common.Pgid{},
+		slots:   []int{},
+		txFreed: map[int][]int{},
 	}
 }
 
 // Allocate find n contiguous pages slots from freelist,
-// returns (start pgid, succeed)
-func (f *Freelist) Allocate(n int) (common.Pgid, bool) {
-	startID := common.Pgid(0)
-	lastID := common.Pgid(0)
+// returns (start int, succeed)
+func (f *Freelist) Allocate(n int) (int, bool) {
+	startID := int(0)
+	lastID := int(0)
 
-	for i, currentID := range f.ids {
+	for i, currentID := range f.slots {
 		// for first page and discontinuous page, recount
 		if i == 0 || currentID != lastID+1 {
 			startID = currentID
 		}
 
 		if int(currentID-startID+1) == n {
-			// Found n continuous pages, take out from pgids
-			copy(f.ids[i+1-n:], f.ids[i+1:])
-			f.ids = f.ids[:len(f.ids)-n]
+			// Found n continuous pages, take out from ints
+			copy(f.slots[i+1-n:], f.slots[i+1:])
+			f.slots = f.slots[:len(f.slots)-n]
 
 			return startID, true
 		}
@@ -88,50 +85,52 @@ func (f *Freelist) Allocate(n int) (common.Pgid, bool) {
 }
 
 // Add adds page to freelist tx cache.
-func (f *Freelist) Add(p *page.Page) {
-	if p.Index == 0 {
+func (f *Freelist) Add(tid int, p PageInterface) {
+	if p.GetIndex() == 0 {
 		panic("Page already freed")
 	}
-	for i := 0; i <= p.Overflow; i++ {
-		f.txFreed = append(f.txFreed, p.Index+common.Pgid(i))
+	if _, exist := f.txFreed[tid]; !exist {
+		f.txFreed[tid] = []int{}
 	}
-	p.Index = 0
+	for i := 0; i < p.GetPageCount(); i++ {
+		f.txFreed[tid] = append(f.txFreed[tid], p.GetIndex()+i)
+	}
 }
 
 // Release put tx cache pages to freelist.
 func (f *Freelist) Release() {
 	sort.Sort(f.txFreed)
 	f.ids = merge(f.ids, f.txFreed)
-	f.txFreed = pgids{}
+	f.txFreed = ints{}
 }
 
 // Rollback clears transaction freed pages.
 func (f *Freelist) Rollback() {
-	f.txFreed = []common.Pgid{}
+	f.txFreed = []int{}
 }
 
 // Size returns size when write to memory page.
 func (f *Freelist) Size() int {
-	return page.HeaderSize + int(unsafe.Sizeof(uint32(0)))*len(f.ids)
+	return HeaderSize + int(unsafe.Sizeof(uint32(0)))*len(f.slots)
 }
 
 // ReadPage reads freelist from page.
-func (f *Freelist) ReadPage(p *page.Page) {
+func (f *Freelist) ReadPage(p PageInterface) {
 	if !p.IsFreelist() {
 		panic("page type mismatch")
 	}
-	buf := (*[maxFreeSlot]common.Pgid)(unsafe.Pointer(&p.Data))
+	buf := (*[maxFreeSlot]int)(unsafe.Pointer(&p.Data))
 	for i := 0; i < p.Count; i++ {
 		f.ids = append(f.ids, buf[i])
 	}
 }
 
 // WritePage write freelist to page.
-// page header | pgid 1 | pgid 2 | ..
-func (f *Freelist) WritePage(p *page.Page) {
-	p.SetFlag(page.FlagFreelist)
+// page header | int 1 | int 2 | ..
+func (f *Freelist) WritePage(p PageInterface) {
+	p.SetFlag(FreelistPage)
 	p.Count = len(f.ids)
-	buf := (*[maxFreeSlot]common.Pgid)(unsafe.Pointer(&p.Data))
+	buf := (*[maxFreeSlot]int)(unsafe.Pointer(&p.Data))
 	for i, id := range f.ids {
 		buf[i] = id
 	}
