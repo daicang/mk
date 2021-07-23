@@ -32,15 +32,14 @@ const (
 
 // DBMeta holds database metadata.
 type DBMeta struct {
-	// magic should be mkMagic, to distinguish DB file
+	// magic marker
 	magic uint32
-	// number of allocated pages, also id of next new page
-	// in headroom
+	// allocated page count, also first new page index
 	totalPages int
-	// page id of first freelist page
-	freelistPage int
-	// page id of root page
-	rootPage int
+	// freelist page index
+	freelistIndex int
+	// root page index
+	rootIndex int
 }
 
 type PageInterface interface {

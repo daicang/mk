@@ -44,17 +44,17 @@ func merge(a, b ints) ints {
 
 // Freelist tracks unused page slots in mmap.
 type Freelist struct {
-	// free page ids
-	ids ints
-	// pages to be freed by the end of transaction
-	txFreed ints
+	// free slot ids
+	slots []int
+	// pages to freed by writable transaction
+	txFreed map[int][]int
 }
 
 // NewFreelist returns empty freelist.
 func NewFreelist() *Freelist {
 	return &Freelist{
-		ids:     []int{},
-		txFreed: []int{},
+		slots:   []int{},
+		txFreed: map[int][]int{},
 	}
 }
 
@@ -64,7 +64,7 @@ func (f *Freelist) Allocate(n int) (int, bool) {
 	startID := int(0)
 	lastID := int(0)
 
-	for i, currentID := range f.ids {
+	for i, currentID := range f.slots {
 		// for first page and discontinuous page, recount
 		if i == 0 || currentID != lastID+1 {
 			startID = currentID
@@ -72,8 +72,8 @@ func (f *Freelist) Allocate(n int) (int, bool) {
 
 		if int(currentID-startID+1) == n {
 			// Found n continuous pages, take out from ints
-			copy(f.ids[i+1-n:], f.ids[i+1:])
-			f.ids = f.ids[:len(f.ids)-n]
+			copy(f.slots[i+1-n:], f.slots[i+1:])
+			f.slots = f.slots[:len(f.slots)-n]
 
 			return startID, true
 		}
@@ -85,12 +85,15 @@ func (f *Freelist) Allocate(n int) (int, bool) {
 }
 
 // Add adds page to freelist tx cache.
-func (f *Freelist) Add(p *Page) {
-	if p.Index == 0 {
+func (f *Freelist) Add(tid int, p PageInterface) {
+	if p.GetIndex() == 0 {
 		panic("Page already freed")
 	}
-	for i := 0; i <= p.Overflow; i++ {
-		f.txFreed = append(f.txFreed, p.Index+int(i))
+	if _, exist := f.txFreed[tid]; !exist {
+		f.txFreed[tid] = []int{}
+	}
+	for i := 0; i < p.GetPageCount(); i++ {
+		f.txFreed[tid] = append(f.txFreed[tid], p.GetIndex()+i)
 	}
 }
 
@@ -108,11 +111,11 @@ func (f *Freelist) Rollback() {
 
 // Size returns size when write to memory page.
 func (f *Freelist) Size() int {
-	return HeaderSize + int(unsafe.Sizeof(uint32(0)))*len(f.ids)
+	return HeaderSize + int(unsafe.Sizeof(uint32(0)))*len(f.slots)
 }
 
 // ReadPage reads freelist from page.
-func (f *Freelist) ReadPage(p *Page) {
+func (f *Freelist) ReadPage(p PageInterface) {
 	if !p.IsFreelist() {
 		panic("page type mismatch")
 	}
@@ -124,8 +127,8 @@ func (f *Freelist) ReadPage(p *Page) {
 
 // WritePage write freelist to page.
 // page header | int 1 | int 2 | ..
-func (f *Freelist) WritePage(p *Page) {
-	p.SetFlag(FlagFreelist)
+func (f *Freelist) WritePage(p PageInterface) {
+	p.SetFlag(FreelistPage)
 	p.Count = len(f.ids)
 	buf := (*[maxFreeSlot]int)(unsafe.Pointer(&p.Data))
 	for i, id := range f.ids {

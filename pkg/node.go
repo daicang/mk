@@ -32,13 +32,23 @@ type NodeInterface interface {
 
 	IsRoot() bool
 	IsLeaf() bool
+	IsInternal() bool
 	IsBalanced() bool
 
+	GetIndex() int
+	GetChildCount() int
 	GetRoot() NodeInterface
+
+	GetKeyAt(i int) []byte
+	GetValueAt(i int) []byte
+	GetCIDAt(i int) int
 
 	PersistencySize() int
 
 	Search(key []byte) (bool, int)
+
+	SetParent(parent NodeInterface)
+	SetValueAt(i int, value []byte)
 
 	InsertKeyValueAt(i int, key, value []byte)
 	InsertKeyChildAt(i int, key []byte, cid int)
@@ -99,15 +109,27 @@ func (n *Node) IsLeaf() bool {
 	return n.isLeaf
 }
 
+func (n *Node) IsInternal() bool {
+	return !n.isLeaf
+}
+
 func (n *Node) IsRoot() bool {
 	return n.parent == nil
 }
 
-func (n *Node) getChildCount() int {
+func (n *Node) GetChildCount() int {
 	if n.isLeaf {
 		return 0
 	}
 	return len(n.cids)
+}
+
+func (n *Node) GetIndex() int {
+	return n.id
+}
+
+func (n *Node) GetCIDAt(i int) int {
+	return n.cids[i]
 }
 
 // ReadPage initiate a node from page.
@@ -180,6 +202,10 @@ func (n *Node) Search(key []byte) (bool, int) {
 		return true, i
 	}
 	return false, i
+}
+
+func (n *Node) SetParent(parent NodeInterface) {
+	n.parent = parent
 }
 
 // InsertKeyValueAt inserts key/value pair into leaf node.
@@ -297,22 +323,19 @@ func (n *Node) KeyCount() int {
 	return len(n.keys)
 }
 
-// Split splits node into multiple siblings according to size
-// and keys.
-// split sets Parent for new node, but not update for parent-side,
-// and not allocate page for new node.
+// Split splits oversized node, newly created node
+// is not mapped to page.
+// split sets Parent for new node, but not update for parent-side.
 func (n *Node) Split() []NodeInterface {
 	nodes := []*Node{}
-	node := n
+	next := n
 	for {
-		nodes = append(nodes, node)
-		next := node.splitTwo()
+		nodes = append(nodes, next)
+		next = next.splitTwo()
 		if next == nil {
 			break
 		}
-		node = next
 	}
-
 	return nodes
 }
 

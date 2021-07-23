@@ -10,14 +10,14 @@ import (
 type Tx struct {
 	db *DB
 	// Transaction ID
-	id uint32
+	id int
 	// Read-only mark
 	writable bool
 	// Pointer to mata struct
 	meta *DBMeta
 	// root points to the b+tree root
 	root NodeInterface
-	// All accessed nodes in this transaction.
+	// nodes stores all accessed nodes in this transaction.
 	nodes map[int]NodeInterface
 	// Dirty pages in this tx, nil for read-only tx.
 	dirtyPages map[int]PageInterface
@@ -97,7 +97,7 @@ func (tx *Tx) Commit() bool {
 		tx.merge(n)
 	}
 	// Split nodes and write to memory page
-	ok := tx.spillNode(tx.root)
+	ok := tx.split(tx.root)
 	if !ok {
 		fmt.Println("Failed to spill")
 		tx.rollback()
@@ -172,27 +172,25 @@ func (tx *Tx) rollback() {
 }
 
 // getPage returns page from int.
-func (tx *Tx) getPage(id int) *Page {
+func (tx *Tx) getPage(id int) PageInterface {
 	p, exist := tx.dirtyPages[id]
 	if exist {
 		return p
 	}
-	return tx.db.getPage(id)
+	return PageFromBuffer(*tx.db.mmBuf, id)
 }
 
-// getNode returns node from int.
-func (tx *Tx) getNode(id int, parent *Node) *Node {
+func (tx *Tx) getNode(id int, parent NodeInterface) NodeInterface {
 	n, exist := tx.nodes[id]
 	if exist {
 		return n
 	}
 
 	p := tx.getPage(id)
-	n = &Node{
-		Parent: parent,
-	}
-
+	n = NewNode()
 	n.ReadPage(p)
+	n.SetParent(parent)
+
 	tx.nodes[id] = n
 
 	return n
@@ -213,7 +211,7 @@ func (tx *Tx) Get(key Key) (bool, Value) {
 }
 
 // Set sets key with value, returns (found, oldValue)
-func (tx *Tx) Set(key Key, value Value) (bool, Value) {
+func (tx *Tx) Set(key, value []byte) (bool, []byte) {
 	if !tx.writable {
 		panic("Readonly transaction")
 	}
@@ -221,17 +219,17 @@ func (tx *Tx) Set(key Key, value Value) (bool, Value) {
 	curr := tx.root
 	for {
 		found, i := curr.Search(key)
-
-		if curr.IsLeaf {
+		if curr.IsLeaf() {
 			if found {
-				oldValue := curr.GetValueAt(i)
+				old := curr.GetValueAt(i)
 				curr.SetValueAt(i, value)
-				return true, oldValue
+				return true, old
 			}
+
 			curr.Balanced = false
 			curr.InsertKeyValueAt(i, key, value)
 
-			return false, Value{}
+			return false, []byte{}
 		}
 
 		curr = tx.getChildAt(curr, i)
@@ -264,38 +262,30 @@ func (tx *Tx) Remove(key Key) (bool, Value) {
 	}
 }
 
-// getChildAt returns one child node.
-func (tx *Tx) getChildAt(n *Node, i int) *Node {
-	if i < 0 || i >= n.KeyCount() {
-		panic(fmt.Sprintf("Invalid child index: %d out of %d", i, n.KeyCount()))
-	}
-	return tx.getNode(n.GetChildID(i), n)
-}
-
-// spill splits node and writes to pages(not to disk).
-// spill run top-down
-func (tx *Tx) spillNode(n *Node) bool {
+// split splits node from top-down and writes to page buffer(not to disk).
+func (tx *Tx) split(n NodeInterface) bool {
 	if n.Spilled {
 		return true
 	}
-	// Spill children first
-	if !n.IsLeaf {
-		for i := 0; i < n.KeyCount(); i++ {
-			ch := tx.getChildAt(n, i)
-			ok := tx.spillNode(ch)
+	if n.IsInternal() {
+		// Spill child nodes first
+		for i := 0; i < n.GetChildCount(); i++ {
+			child := tx.getNode(n.GetCIDAt(i), n)
+			ok := tx.split(child)
 			if !ok {
 				return false
 			}
 		}
 	}
-	// Split self
+
 	for _, n := range n.Split() {
-		// Since node is changed after split, we need
-		// to allocate new pages for each node.
-		if n.Index != 0 {
-			// When node has an old page, return to
-			// freelist
-			tx.db.freelist.Add(tx.getPage(n.Index))
+		// Remember we're in a writable transaction,
+		// so for every node in the access path, whether
+		// it's splited or node, we need to allocate a new
+		// page.
+		if n.GetIndex() != 0 {
+			// Return the old page
+			tx.db.freelist.Add(tx.id, tx.getPage(n.GetIndex()))
 			n.Index = 0
 		}
 		// Allocate new page

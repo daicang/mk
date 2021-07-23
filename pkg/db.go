@@ -255,7 +255,7 @@ func (db *DB) mmap(sz int) bool {
 }
 
 // getPage returns immutable page from memory map.
-func (db *DB) getPage(index int) *Page {
+func (db *DB) getPage(index int) PageInterface {
 	offset := index * int(PageSize)
-	return (*Page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
+	return (Page)(unsafe.Pointer(&db.mmSizedBuf[offset]))
 }
